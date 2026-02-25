@@ -31,7 +31,7 @@
 ## Install
 
 ```bash
-git clone https://github.com/your-org/personaport.git
+git clone https://github.com/0x-Professor/PersonaPort.git
 cd personaport
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
