@@ -14,6 +14,7 @@ class ChatGPTAdapter(PlatformAdapter):
     platform = Platform.CHATGPT
     home_url = "https://chatgpt.com/"
     new_chat_url = "https://chatgpt.com/"
+    data_controls_url = "https://chatgpt.com/#settings/DataControls"
 
     def login(self, page: Page, console: Console) -> None:
         page.goto(self.home_url, wait_until="domcontentloaded")
@@ -30,29 +31,27 @@ class ChatGPTAdapter(PlatformAdapter):
         no_scrape: bool,
         console: Console,
     ) -> ExportResult:
-        page.goto(self.home_url, wait_until="domcontentloaded")
+        data_controls_ready = self._open_data_controls(page, console)
+        export_requested = data_controls_ready and self._request_official_export(page)
 
-        clicked_export = self._click_first(
-            page,
-            [
-                "button[aria-label*='Settings']",
-                "button:has-text('Settings')",
-                "button:has-text('Data controls')",
-                "button:has-text('Export data')",
-            ],
-        )
-        if clicked_export:
+        if export_requested:
             console.print(
-                "[green]Attempted official export flow.[/green] "
-                "ChatGPT usually delivers export links by email."
+                "[green]Clicked ChatGPT Export button in Data controls.[/green] "
+                "Download link is typically sent by email."
+            )
+        else:
+            console.print(
+                "[yellow]Could not auto-click Export in Data controls.[/yellow] "
+                "Please click Export manually in the open browser window."
             )
 
         if safe_mode or no_scrape:
             return ExportResult(
                 status="manual_required",
                 message=(
-                    "Official export requested. Complete export manually if prompted and "
-                    "then run `personaport process --file <export.zip>`."
+                    "Official export flow opened. Complete export (email link), download ZIP, then "
+                    "use `personaport export --export-file <path>` or "
+                    "`personaport process --file <export.zip> --from chatgpt`."
                 ),
             )
 
@@ -126,6 +125,79 @@ class ChatGPTAdapter(PlatformAdapter):
 
         console.print(f"Scraped {len(conversations)} ChatGPT conversation(s).")
         return conversations
+
+    def _open_data_controls(self, page: Page, console: Console) -> bool:
+        page.goto(self.data_controls_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(1500)
+        if self._has_export_controls(page):
+            return True
+
+        # Fallback if hash route does not open settings panel directly.
+        page.goto(self.home_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(1500)
+        opened_settings = self._click_first(
+            page,
+            [
+                "button[aria-label*='Settings']",
+                "button:has-text('Settings')",
+                "button:has-text('Account')",
+            ],
+            timeout_ms=2000,
+        )
+        if not opened_settings:
+            return False
+        self._click_first(
+            page,
+            [
+                "button:has-text('Data controls')",
+                "[role='tab']:has-text('Data controls')",
+                "text=Data controls",
+            ],
+            timeout_ms=2500,
+        )
+        page.wait_for_timeout(700)
+        ready = self._has_export_controls(page)
+        if ready:
+            console.print("[green]Opened ChatGPT Data controls settings.[/green]")
+        return ready
+
+    def _has_export_controls(self, page: Page) -> bool:
+        probes = [
+            "text=Export data",
+            "button:has-text('Export')",
+            "div:has-text('Export data') button",
+        ]
+        for selector in probes:
+            locator = page.locator(selector).first
+            if locator.count() > 0:
+                return True
+        return False
+
+    def _request_official_export(self, page: Page) -> bool:
+        # Click the Export button in Data controls.
+        clicked_export = self._click_first(
+            page,
+            [
+                "div:has-text('Export data') button:has-text('Export')",
+                "button:has-text('Export')",
+                "[role='button']:has-text('Export')",
+            ],
+            timeout_ms=3000,
+        )
+        if not clicked_export:
+            return False
+
+        # Optional second confirmation dialog.
+        self._click_first(
+            page,
+            [
+                "button:has-text('Confirm export')",
+                "button:has-text('Confirm')",
+                "button:has-text('Export data')",
+            ],
+            timeout_ms=2500,
+        )
+        return True
 
     def _fill_prompt_box(self, page: Page, prompt_text: str) -> bool:
         selectors = [
