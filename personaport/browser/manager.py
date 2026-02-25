@@ -20,18 +20,24 @@ class BrowserManager:
         self,
         state_path: Path,
         *,
+        downloads_path: Path | None = None,
         headless: bool = False,
         slow_mo_ms: int = 50,
     ) -> None:
         self.state_path = state_path
+        self.downloads_path = downloads_path
         self.headless = headless
         self.slow_mo_ms = slow_mo_ms
 
     @contextmanager
     def open(self) -> Iterator[BrowserRuntime]:
         with sync_playwright() as playwright:
+            if self.downloads_path is not None:
+                self.downloads_path.mkdir(parents=True, exist_ok=True)
             browser = playwright.chromium.launch(
-                headless=self.headless, slow_mo=self.slow_mo_ms
+                headless=self.headless,
+                slow_mo=self.slow_mo_ms,
+                downloads_path=str(self.downloads_path) if self.downloads_path else None,
             )
             if self.state_path.exists():
                 context = browser.new_context(

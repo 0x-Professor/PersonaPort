@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +54,75 @@ def _render_output_files(console: Any, output_files: dict[str, str]) -> None:
     for key, value in output_files.items():
         table.add_row(key, value)
     console.print(table)
+
+
+def _manual_export_markers(platform: Platform) -> set[str]:
+    mapping = {
+        Platform.CHATGPT: {"chatgpt", "openai", "conversation", "conversations", "export"},
+        Platform.CLAUDE: {"claude", "anthropic", "conversation", "export"},
+        Platform.GEMINI: {"gemini", "google", "conversation", "export"},
+    }
+    return mapping.get(platform, {"conversation", "export"})
+
+
+def _find_latest_export_candidate(
+    *,
+    platform: Platform,
+    search_dirs: list[Path],
+    not_before: datetime,
+) -> Path | None:
+    markers = _manual_export_markers(platform)
+    candidates: list[Path] = []
+    threshold = not_before.timestamp() - 120
+
+    for directory in search_dirs:
+        if not directory.exists():
+            continue
+        for pattern in ("*.zip", "*.json", "*.html"):
+            for path in directory.glob(pattern):
+                if not path.is_file():
+                    continue
+                name = path.name.lower()
+                if not any(marker in name for marker in markers):
+                    continue
+                try:
+                    if path.stat().st_mtime < threshold:
+                        continue
+                except OSError:
+                    continue
+                candidates.append(path)
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _wait_for_manual_export_file(
+    *,
+    platform: Platform,
+    exports_dir: Path,
+    not_before: datetime,
+    wait_minutes: int,
+    console: Any,
+) -> Path | None:
+    search_dirs = [exports_dir, Path.home() / "Downloads", Path.cwd()]
+    deadline = time.time() + (wait_minutes * 60)
+    announced_wait = False
+
+    while True:
+        candidate = _find_latest_export_candidate(
+            platform=platform, search_dirs=search_dirs, not_before=not_before
+        )
+        if candidate:
+            return candidate
+        if time.time() >= deadline:
+            return None
+        if not announced_wait:
+            console.print(
+                "[yellow]Waiting for manual export file in Downloads/exports directory...[/yellow]"
+            )
+            announced_wait = True
+        time.sleep(10)
 
 
 @app.callback()
@@ -144,6 +215,23 @@ def export(
         help="Disable scraping fallback even in unsafe mode.",
     ),
     model: str | None = typer.Option(None, "--model", help="Override LiteLLM model."),
+    export_file: Path | None = typer.Option(
+        None,
+        "--export-file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Manual export file (ZIP/JSON/HTML) to process in the same command.",
+    ),
+    wait_for_export: int = typer.Option(
+        0,
+        "--wait-for-export",
+        min=0,
+        help=(
+            "Minutes to poll for downloaded manual export files after triggering official export. "
+            "Use 0 for no waiting."
+        ),
+    ),
     headless: bool = typer.Option(False, "--headless/--no-headless"),
     auto_inject: bool = typer.Option(
         True,
@@ -159,6 +247,7 @@ def export(
     cache: ConversationCache = state["cache"]
     processor: ConversationProcessor = state["processor"]
     transfer: TransferService = state["transfer"]
+    command_started_at = datetime.now(timezone.utc)
 
     if not safe_mode and not no_scrape:
         if not confirm_unsafe_mode(console):
@@ -178,7 +267,11 @@ def export(
         console=console,
     ) as progress:
         progress.add_task(description=f"Exporting from {from_platform.value}...", total=None)
-        with BrowserManager(state_path=source_state_path, headless=headless).open() as runtime:
+        with BrowserManager(
+            state_path=source_state_path,
+            downloads_path=app_config.exports_dir,
+            headless=headless,
+        ).open() as runtime:
             page = runtime.context.new_page()
             export_result = adapter.export_data(
                 page,
@@ -200,11 +293,30 @@ def export(
         )
     elif export_result.conversations:
         conversations = export_result.conversations
+    elif export_file:
+        conversations = processor.load_conversations(
+            export_file.expanduser(), source_platform=from_platform
+        )
+    elif export_result.status == "manual_required":
+        discovered_export = _wait_for_manual_export_file(
+            platform=from_platform,
+            exports_dir=app_config.exports_dir,
+            not_before=command_started_at,
+            wait_minutes=wait_for_export,
+            console=console,
+        )
+        if discovered_export:
+            console.print(f"[green]Found manual export:[/green] {discovered_export}")
+            conversations = processor.load_conversations(
+                discovered_export, source_platform=from_platform
+            )
 
     if not conversations:
         console.print(
             "[yellow]No conversations loaded into cache.[/yellow] "
-            "If export was manual, run `personaport process --file <export.zip>` after downloading."
+            "Provide `--export-file <path>` or run "
+            "`personaport process --file <export.zip> --from "
+            f"{from_platform.value}` after downloading."
         )
         raise typer.Exit(code=0)
 

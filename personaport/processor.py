@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import html as html_lib
 import json
 import re
 import zipfile
@@ -47,20 +49,17 @@ class ConversationProcessor:
             raise FileNotFoundError(f"Input file not found: {file_path}")
 
         platform = self._normalize_platform(source_platform)
-        payload = self._read_payload(file_path)
-        if platform == Platform.CHATGPT.value:
-            return self._parse_chatgpt(payload)
-        if platform == Platform.CLAUDE.value:
-            return self._parse_claude(payload)
-        if platform == Platform.GEMINI.value:
-            return self._parse_gemini(payload)
+        suffix = file_path.suffix.lower()
 
-        # Unknown platform: best-effort parser chain.
-        for parser in (self._parse_personaport_json, self._parse_chatgpt, self._parse_claude, self._parse_gemini):
-            conversations = parser(payload)
-            if conversations:
-                return conversations
-        return []
+        if suffix in {".html", ".htm"}:
+            html_text = file_path.read_text(encoding="utf-8", errors="ignore")
+            return self._parse_chatgpt_html(html_text, source_name=file_path.name)
+
+        if suffix == ".zip":
+            return self._load_from_zip(file_path, platform)
+
+        payload = self._load_json_payload(file_path)
+        return self._parse_payload_by_platform(payload, platform)
 
     def combine_conversations(
         self, conversations: list[Conversation], source_platform: Platform | str
@@ -127,24 +126,155 @@ class ConversationProcessor:
 
         return self._truncate_history(conversation, max_chars=max_chars)
 
-    def _read_payload(self, file_path: Path) -> Any:
-        if file_path.suffix.lower() == ".zip":
-            with TemporaryDirectory() as temp_dir:
-                temp_root = Path(temp_dir)
-                with zipfile.ZipFile(file_path, "r") as archive:
-                    archive.extractall(temp_root)
-                json_files = sorted(temp_root.rglob("*.json"))
-                if not json_files:
-                    raise ValueError("ZIP does not contain JSON files.")
-                prioritized = sorted(
-                    json_files,
-                    key=lambda path: (
-                        0 if path.name.lower() == "conversations.json" else 1,
-                        len(path.parts),
-                    ),
+    def _load_from_zip(self, zip_path: Path, platform: str) -> list[Conversation]:
+        with TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            with zipfile.ZipFile(zip_path, "r") as archive:
+                archive.extractall(temp_root)
+
+            json_files = sorted(temp_root.rglob("*.json"))
+            html_files = sorted(temp_root.rglob("*.html"))
+
+            prioritized_json = sorted(
+                json_files,
+                key=lambda path: (
+                    0 if path.name.lower() == "conversations.json" else 1,
+                    len(path.parts),
+                ),
+            )
+
+            for json_path in prioritized_json:
+                try:
+                    payload = self._load_json_payload(json_path)
+                except Exception:
+                    continue
+                parsed = self._parse_payload_by_platform(payload, platform)
+                if parsed:
+                    return parsed
+
+            for html_path in html_files:
+                try:
+                    html_text = html_path.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+                parsed = self._parse_chatgpt_html(html_text, source_name=html_path.name)
+                if parsed:
+                    return parsed
+
+        raise ValueError(
+            "ZIP export could not be parsed. Expected conversations JSON or ChatGPT chat.html."
+        )
+
+    def _load_json_payload(self, path: Path) -> Any:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _parse_payload_by_platform(self, payload: Any, platform: str) -> list[Conversation]:
+        if platform == Platform.CHATGPT.value:
+            conversations = self._parse_chatgpt(payload)
+            if conversations:
+                return conversations
+            return self._parse_personaport_json(payload)
+
+        if platform == Platform.CLAUDE.value:
+            conversations = self._parse_claude(payload)
+            if conversations:
+                return conversations
+            return self._parse_personaport_json(payload)
+
+        if platform == Platform.GEMINI.value:
+            conversations = self._parse_gemini(payload)
+            if conversations:
+                return conversations
+            return self._parse_personaport_json(payload)
+
+        # Unknown platform: best-effort parser chain.
+        for parser in (
+            self._parse_personaport_json,
+            self._parse_chatgpt,
+            self._parse_claude,
+            self._parse_gemini,
+        ):
+            conversations = parser(payload)
+            if conversations:
+                return conversations
+        return []
+
+    def _parse_chatgpt_html(
+        self, html_text: str, *, source_name: str = "chat.html"
+    ) -> list[Conversation]:
+        if not html_text.strip():
+            return []
+
+        article_blocks = re.findall(
+            r"(?is)<article\b[^>]*>.*?</article>",
+            html_text,
+        )
+        if not article_blocks:
+            return []
+
+        messages: list[ChatMessage] = []
+        for index, block in enumerate(article_blocks):
+            role = self._detect_chatgpt_html_role(block, index)
+            text = self._strip_html(block)
+            text = re.sub(r"^(You|ChatGPT|Assistant)\s+said:\s*", "", text, flags=re.IGNORECASE)
+            text = text.strip()
+            if not text:
+                continue
+            messages.append(
+                ChatMessage(
+                    role=role,
+                    content=text,
+                    timestamp=None,
                 )
-                return json.loads(prioritized[0].read_text(encoding="utf-8"))
-        return json.loads(file_path.read_text(encoding="utf-8"))
+            )
+
+        if not messages:
+            return []
+
+        title_match = re.search(r"(?is)<title>(.*?)</title>", html_text)
+        raw_title = title_match.group(1).strip() if title_match else "ChatGPT Export"
+        title = re.sub(r"\s+", " ", html_lib.unescape(raw_title))
+        title = re.sub(r"^\s*ChatGPT\s*[-:]\s*", "", title, flags=re.IGNORECASE).strip()
+        if not title:
+            title = "ChatGPT Export"
+
+        conv_hash = hashlib.sha1(html_text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        conversation = Conversation(
+            id=f"chatgpt_html_{conv_hash}",
+            title=title,
+            source_platform=Platform.CHATGPT,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            messages=messages,
+            metadata={"raw_source": source_name, "format": "chatgpt_chat_html"},
+        )
+        return [conversation]
+
+    def _detect_chatgpt_html_role(self, block: str, index: int) -> MessageRole:
+        lowered = block.lower()
+        if "you said:" in lowered:
+            return MessageRole.USER
+        if "chatgpt said:" in lowered or "assistant said:" in lowered:
+            return MessageRole.ASSISTANT
+        if 'data-message-author-role="user"' in lowered:
+            return MessageRole.USER
+        if 'data-message-author-role="assistant"' in lowered:
+            return MessageRole.ASSISTANT
+        # Fallback for ambiguous HTML exports: alternate roles by turn index.
+        return MessageRole.USER if index % 2 == 0 else MessageRole.ASSISTANT
+
+    def _strip_html(self, value: str) -> str:
+        without_scripts = re.sub(
+            r"(?is)<(script|style)\b[^>]*>.*?</\1>",
+            "",
+            value,
+        )
+        without_tags = re.sub(r"(?is)<[^>]+>", "\n", without_scripts)
+        normalized = html_lib.unescape(without_tags)
+        normalized = re.sub(r"\r\n?", "\n", normalized)
+        normalized = re.sub(r"[ \t]+\n", "\n", normalized)
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+        return normalized.strip()
 
     def _parse_personaport_json(self, payload: Any) -> list[Conversation]:
         if isinstance(payload, list):

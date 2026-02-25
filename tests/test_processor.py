@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,3 +54,51 @@ def test_persona_extraction_heuristic_fallback() -> None:
 
     assert "preferences" in persona.system_prompt.lower() or "prefer" in persona.system_prompt.lower()
     assert any("rust" in fact.lower() for fact in persona.extracted_facts)
+
+
+def test_processor_parses_chatgpt_chat_html(tmp_path: Path) -> None:
+    html_path = tmp_path / "chat.html"
+    html_path.write_text(
+        """
+        <html>
+          <head><title>ChatGPT - Migration Test</title></head>
+          <body>
+            <article><h5 class="sr-only">You said:</h5><div>Hello there</div></article>
+            <article><h5 class="sr-only">ChatGPT said:</h5><div>General Kenobi</div></article>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+
+    processor = ConversationProcessor(console=get_console())
+    conversations = processor.load_conversations(html_path, source_platform=Platform.CHATGPT)
+
+    assert len(conversations) == 1
+    assert conversations[0].title == "Migration Test"
+    assert [msg.role for msg in conversations[0].messages] == [
+        MessageRole.USER,
+        MessageRole.ASSISTANT,
+    ]
+
+
+def test_processor_parses_zip_with_chat_html(tmp_path: Path) -> None:
+    html_content = """
+        <html>
+          <head><title>ChatGPT - Zip Test</title></head>
+          <body>
+            <article><h5 class="sr-only">You said:</h5><div>Message A</div></article>
+            <article><h5 class="sr-only">ChatGPT said:</h5><div>Message B</div></article>
+          </body>
+        </html>
+    """
+    zip_path = tmp_path / "chatgpt_export.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("chat.html", html_content)
+
+    processor = ConversationProcessor(console=get_console())
+    conversations = processor.load_conversations(zip_path, source_platform=Platform.CHATGPT)
+
+    assert len(conversations) == 1
+    assert conversations[0].title == "Zip Test"
+    assert len(conversations[0].messages) == 2

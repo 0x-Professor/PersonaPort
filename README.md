@@ -6,8 +6,6 @@
 
 **THIS TOOL USES BROWSER AUTOMATION WHICH MAY VIOLATE PLATFORM TOS. USE AT YOUR OWN RISK. RISK OF ACCOUNT BAN. WE STRONGLY RECOMMEND USING OFFICIAL MANUAL EXPORT INSTEAD.**
 
-**THIS TOOL USES BROWSER AUTOMATION WHICH MAY VIOLATE PLATFORM TOS. USE AT YOUR OWN RISK. RISK OF ACCOUNT BAN. WE STRONGLY RECOMMEND USING OFFICIAL MANUAL EXPORT INSTEAD.**
-
 - No passwords are stored in code or logs.
 - Sessions are saved as Playwright storage state after manual login.
 - Data stays on your machine (`~/.personaport` by default).
@@ -76,6 +74,12 @@ personaport login --platform claude
 # 2) safe export + process + migrate package output
 personaport export --from chatgpt --to claude --all --safe-mode --no-scrape
 
+# 2b) safe export but continue automatically once you download ZIP from email link
+personaport export --from chatgpt --to claude --all --safe-mode --no-scrape --wait-for-export 10
+
+# 2c) provide the downloaded export directly (best for ChatGPT email exports)
+personaport export --from chatgpt --to claude --all --safe-mode --no-scrape --export-file ~/Downloads/chatgpt_export.zip
+
 # 3) process manual export file directly
 personaport process --file ~/Downloads/chatgpt_export.zip --from chatgpt
 
@@ -86,7 +90,7 @@ personaport migrate --input session --target claude
 ## CLI Commands
 
 - `personaport login --platform <chatgpt|claude|gemini>`
-- `personaport export --from <platform> --to <platform> --all [--safe-mode] [--no-scrape]`
+- `personaport export --from <platform> --to <platform> --all [--safe-mode] [--no-scrape] [--export-file path] [--wait-for-export N]`
 - `personaport process --file <export.zip|json> [--from platform] [--persona "..."]`
 - `personaport migrate --input <session|conversation_id|file> --target <platform>`
 
