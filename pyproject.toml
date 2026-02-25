@@ -1,7 +1,54 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
 [project]
 name = "personaport"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local-first AI conversation/persona portability tool with safety-first browser automation."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+license = { text = "MIT" }
+authors = [
+  { name = "PersonaPort Contributors" }
+]
+keywords = ["ai", "cli", "playwright", "migration", "persona", "litellm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries",
+  "Topic :: Utilities"
+]
+dependencies = [
+  "typer>=0.12.3",
+  "rich>=13.7.1",
+  "playwright>=1.52.0",
+  "pydantic>=2.8.2",
+  "litellm>=1.57.6",
+  "python-dotenv>=1.0.1",
+  "keyring>=25.2.1",
+  "jinja2>=3.1.4",
+  "PyYAML>=6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.2",
+]
+
+[project.scripts]
+personaport = "personaport.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["personaport"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"personaport/templates" = "personaport/templates"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
