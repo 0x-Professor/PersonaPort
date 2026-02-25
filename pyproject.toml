@@ -23,7 +23,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries",
   "Topic :: Utilities"
 ]
-urls = { "Homepage" = "https://github.com/your-org/personaport", "Repository" = "https://github.com/your-org/personaport", "Issues" = "https://github.com/your-org/personaport/issues" }
+urls = { "Homepage" = "https://github.com/0x-Professor/PersonaPort", "Repository" = "https://github.com/0x-Professor/PersonaPort", "Issues" = "https://github.com/0x-Professor/PersonaPort/issues" }
 dependencies = [
   "typer>=0.12.3",
   "rich>=13.7.1",
