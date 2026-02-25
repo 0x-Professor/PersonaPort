@@ -1,0 +1,15 @@
+# CUSTOM INSTRUCTIONS / SYSTEM CONTEXT
+{{ persona_system_prompt }}
+
+{% if persona_facts %}
+# USER PREFERENCES
+{% for fact in persona_facts %}
+- {{ fact }}
+{% endfor %}
+{% endif %}
+
+# CHAT HISTORY CONTEXT
+{{ condensed_history }}
+
+# CONTINUE TASK
+{{ continue_instruction }}

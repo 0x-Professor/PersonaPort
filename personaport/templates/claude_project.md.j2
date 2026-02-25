@@ -1,0 +1,20 @@
+# CLAUDE PROJECT MIGRATION PACK
+
+## Persona (System Style)
+{{ persona_system_prompt }}
+
+## User Facts
+{% for fact in persona_facts %}
+- {{ fact }}
+{% endfor %}
+
+## Style Notes
+{% for note in persona_style_notes %}
+- {{ note }}
+{% endfor %}
+
+## Condensed History
+{{ condensed_history }}
+
+## Continue
+{{ continue_instruction }}

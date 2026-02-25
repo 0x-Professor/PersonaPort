@@ -1,0 +1,15 @@
+# GEMINI CONTEXT PACK
+
+## Persona
+{{ persona_system_prompt }}
+
+## Known User Facts
+{% for fact in persona_facts %}
+- {{ fact }}
+{% endfor %}
+
+## Condensed Conversation History
+{{ condensed_history }}
+
+## Continue Prompt
+{{ continue_instruction }}
