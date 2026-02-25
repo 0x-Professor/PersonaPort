@@ -1,0 +1,18 @@
+# PERSONA
+{{ persona_system_prompt }}
+
+{% if persona_facts %}
+# KEY FACTS
+{% for fact in persona_facts %}
+- {{ fact }}
+{% endfor %}
+{% endif %}
+
+# CONDENSED HISTORY
+{{ condensed_history }}
+
+# FULL HISTORY
+{{ full_history }}
+
+# CONTINUE FROM HERE
+{{ continue_instruction }}
