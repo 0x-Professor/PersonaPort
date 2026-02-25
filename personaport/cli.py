@@ -12,7 +12,7 @@ from personaport.browser.manager import BrowserManager
 from personaport.browser.platforms import get_platform_adapter
 from personaport.config import AppConfig, ConfigManager
 from personaport.db import ConversationCache
-from personaport.models import Conversation, PersonaProfile, Platform, ProcessedHistory
+from personaport.models import Conversation, Platform, ProcessedHistory
 from personaport.processor import ConversationProcessor
 from personaport.transfer import TransferService
 from personaport.utils.console import (
