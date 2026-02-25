@@ -39,6 +39,33 @@ pip install -e .
 playwright install chromium
 ```
 
+## Repository Structure
+
+```text
+PersonaPort/
+  .github/
+    ISSUE_TEMPLATE/
+    workflows/
+      ci.yml
+      publish.yml
+  personaport/
+    browser/
+      platforms/
+    templates/
+    utils/
+    cli.py
+    config.py
+    db.py
+    models.py
+    processor.py
+    transfer.py
+  tests/
+  CONTRIBUTING.md
+  Makefile
+  pyproject.toml
+  README.md
+```
+
 ## Quick Start
 
 ```bash
@@ -105,6 +132,33 @@ Run `personaport --help` for global options.
 ```bash
 pytest
 ```
+
+## CI and Lint
+
+GitHub Actions runs on every push and pull request to `master`/`main`:
+
+- `ruff check .`
+- `pytest`
+
+Run the same checks locally:
+
+```bash
+make check
+```
+
+## Package Publishing
+
+Publishing is configured in `.github/workflows/publish.yml`:
+
+- Trigger: GitHub Release published.
+- Build: `python -m build` and `python -m twine check dist/*`.
+- Publish: `pypa/gh-action-pypi-publish` with PyPI Trusted Publishing.
+
+Setup steps:
+
+1. Create the `personaport` project on PyPI.
+2. Configure PyPI Trusted Publisher for this repository + workflow.
+3. Publish a GitHub release tag (for example `v0.1.1`).
 
 ## Development Status
 
