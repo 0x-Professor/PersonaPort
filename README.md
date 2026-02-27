@@ -83,16 +83,22 @@ personaport export --from chatgpt --to claude --all --safe-mode --no-scrape --ex
 # 3) process manual export file directly
 personaport process --file ~/Downloads/chatgpt_export.zip --from chatgpt
 
+# 3b) process the whole export into one merged migration bundle
+personaport process --file ~/Downloads/chatgpt_export.zip --from chatgpt --target claude --all
+
 # 4) migrate a cached session or export file to target platform
 personaport migrate --input session --target claude
+
+# 4b) migrate whole cached history (all conversations) to target platform
+personaport migrate --input session --source chatgpt --target claude --all
 ```
 
 ## CLI Commands
 
 - `personaport login --platform <chatgpt|claude|gemini>`
 - `personaport export --from <platform> --to <platform> --all [--safe-mode] [--no-scrape] [--export-file path] [--wait-for-export N]`
-- `personaport process --file <export.zip|json> [--from platform] [--persona "..."]`
-- `personaport migrate --input <session|conversation_id|file> --target <platform>`
+- `personaport process --file <export.zip|json> [--from platform] [--all] [--persona "..."]`
+- `personaport migrate --input <session|conversation_id|file> --target <platform> [--all]`
 
 Run `personaport --help` for global options.
 

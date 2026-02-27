@@ -102,3 +102,58 @@ def test_processor_parses_zip_with_chat_html(tmp_path: Path) -> None:
     assert len(conversations) == 1
     assert conversations[0].title == "Zip Test"
     assert len(conversations[0].messages) == 2
+
+
+def test_processor_parses_chatgpt_sharded_zip_all_files(tmp_path: Path) -> None:
+    zip_path = tmp_path / "chatgpt_export.zip"
+
+    shard_0 = [
+        {
+            "id": "conv-0",
+            "title": "Shard 0",
+            "create_time": 1000,
+            "update_time": 1001,
+            "mapping": {
+                "node-0": {
+                    "id": "node-0",
+                    "parent": None,
+                    "children": [],
+                    "message": {
+                        "author": {"role": "user"},
+                        "create_time": 1000,
+                        "content": {"parts": ["hello from shard 0"]},
+                    },
+                }
+            },
+        }
+    ]
+    shard_1 = [
+        {
+            "id": "conv-1",
+            "title": "Shard 1",
+            "create_time": 2000,
+            "update_time": 2001,
+            "mapping": {
+                "node-1": {
+                    "id": "node-1",
+                    "parent": None,
+                    "children": [],
+                    "message": {
+                        "author": {"role": "user"},
+                        "create_time": 2000,
+                        "content": {"parts": ["hello from shard 1"]},
+                    },
+                }
+            },
+        }
+    ]
+
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("conversations-000.json", json.dumps(shard_0))
+        archive.writestr("conversations-001.json", json.dumps(shard_1))
+
+    processor = ConversationProcessor(console=get_console())
+    conversations = processor.load_conversations(zip_path, source_platform=Platform.CHATGPT)
+
+    assert len(conversations) == 2
+    assert {conversation.id for conversation in conversations} == {"conv-0", "conv-1"}
