@@ -143,6 +143,7 @@ class ConversationProcessor:
                 ),
             )
 
+            aggregated: list[Conversation] = []
             for json_path in prioritized_json:
                 try:
                     payload = self._load_json_payload(json_path)
@@ -150,7 +151,13 @@ class ConversationProcessor:
                     continue
                 parsed = self._parse_payload_by_platform(payload, platform)
                 if parsed:
-                    return parsed
+                    for conversation in parsed:
+                        conversation.metadata.setdefault("raw_source_file", json_path.name)
+                    aggregated.extend(parsed)
+
+            deduped = self._dedupe_conversations(aggregated)
+            if deduped:
+                return deduped
 
             for html_path in html_files:
                 try:
@@ -651,8 +658,10 @@ class ConversationProcessor:
         if isinstance(content, dict):
             parts = content.get("parts")
             if isinstance(parts, list):
-                normalized = [str(part) for part in parts if isinstance(part, str)]
-                return "\n".join(normalized).strip()
+                normalized = [self._extract_part_text(part) for part in parts]
+                normalized = [part for part in normalized if part]
+                if normalized:
+                    return "\n".join(normalized).strip()
             text = content.get("text")
             if isinstance(text, str):
                 return text.strip()
@@ -667,14 +676,75 @@ class ConversationProcessor:
             if isinstance(value, str) and value.strip():
                 return value.strip()
             if isinstance(value, list):
-                texts = [str(v).strip() for v in value if str(v).strip()]
+                texts: list[str] = []
+                for entry in value:
+                    extracted = self._extract_part_text(entry)
+                    if extracted:
+                        texts.append(extracted)
                 if texts:
                     return "\n".join(texts)
             if isinstance(value, dict):
-                nested_text = value.get("text")
-                if isinstance(nested_text, str) and nested_text.strip():
-                    return nested_text.strip()
+                nested_extracted = self._extract_part_text(value)
+                if nested_extracted:
+                    return nested_extracted
         return ""
+
+    def _extract_part_text(self, value: Any) -> str:
+        if isinstance(value, str):
+            text = value.strip()
+            return text if text else ""
+
+        if not isinstance(value, dict):
+            return ""
+
+        # Claude structured content items.
+        item_type = str(value.get("type") or "").lower().strip()
+        if item_type == "thinking":
+            summaries = value.get("summaries")
+            if isinstance(summaries, list):
+                summary_texts = [
+                    str(summary.get("summary")).strip()
+                    for summary in summaries
+                    if isinstance(summary, dict) and str(summary.get("summary", "")).strip()
+                ]
+                if summary_texts:
+                    return " ".join(summary_texts)
+            return ""
+
+        for key in ("text", "content", "summary"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+
+        # ChatGPT multimodal asset placeholders.
+        content_type = str(value.get("content_type") or "").lower().strip()
+        if content_type == "image_asset_pointer":
+            pointer = value.get("asset_pointer")
+            if isinstance(pointer, str) and pointer.strip():
+                return f"[Image attachment: {pointer}]"
+            return "[Image attachment]"
+
+        if content_type in {"audio_asset_pointer", "video_asset_pointer"}:
+            pointer = value.get("asset_pointer")
+            if isinstance(pointer, str) and pointer.strip():
+                return f"[{content_type}: {pointer}]"
+            return f"[{content_type}]"
+
+        return ""
+
+    def _dedupe_conversations(self, conversations: list[Conversation]) -> list[Conversation]:
+        deduped: dict[str, Conversation] = {}
+        for conversation in conversations:
+            if conversation.id:
+                dedupe_key = conversation.id
+            else:
+                dedupe_key = hashlib.sha1(
+                    f"{conversation.title}|{conversation.created_at.isoformat()}".encode("utf-8")
+                ).hexdigest()
+            existing = deduped.get(dedupe_key)
+            if existing is None or len(conversation.messages) > len(existing.messages):
+                deduped[dedupe_key] = conversation
+        return sorted(deduped.values(), key=lambda conv: conv.updated_at, reverse=True)
 
     def _parse_timestamp(self, value: Any) -> datetime | None:
         if value is None:
