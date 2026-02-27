@@ -477,6 +477,11 @@ def migrate(
     ),
     target: Platform = typer.Option(..., "--target", case_sensitive=False),
     source: Platform | None = typer.Option(None, "--source", case_sensitive=False),
+    all_history: bool = typer.Option(
+        False,
+        "--all",
+        help="Combine all resolved source conversations into one migration bundle.",
+    ),
     persona: str | None = typer.Option(None, "--persona"),
     model: str | None = typer.Option(None, "--model"),
     auto_inject: bool = typer.Option(
@@ -500,17 +505,43 @@ def migrate(
 
     candidate_path = Path(input_value).expanduser()
     if input_value == "session":
-        selected_conversation = cache.get_latest_conversation(
-            source.value if source else None
-        )
-        if selected_conversation:
-            source_conversations = [selected_conversation]
+        if all_history:
+            cached_conversations = cache.list_conversations(limit=5000)
+            if source:
+                source_conversations = [
+                    conversation
+                    for conversation in cached_conversations
+                    if (
+                        conversation.source_platform.value
+                        if isinstance(conversation.source_platform, Platform)
+                        else str(conversation.source_platform)
+                    )
+                    == source.value
+                ]
+            else:
+                source_conversations = cached_conversations
+            if source_conversations:
+                selected_conversation = processor.combine_conversations(
+                    source_conversations, source or Platform.GENERIC
+                )
+        else:
+            selected_conversation = cache.get_latest_conversation(
+                source.value if source else None
+            )
+            if selected_conversation:
+                source_conversations = [selected_conversation]
     elif candidate_path.exists():
         source_conversations = processor.load_conversations(
             candidate_path, source_platform=source
         )
         if source_conversations:
-            selected_conversation = _latest_conversation(source_conversations)
+            selected_conversation = (
+                processor.combine_conversations(
+                    source_conversations, source or Platform.GENERIC
+                )
+                if all_history
+                else _latest_conversation(source_conversations)
+            )
     else:
         selected_conversation = cache.get_conversation(input_value)
         if selected_conversation:
