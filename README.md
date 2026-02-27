@@ -80,6 +80,9 @@ personaport export --from chatgpt --to claude --all --safe-mode --no-scrape --wa
 # 2c) provide the downloaded export directly (best for ChatGPT email exports)
 personaport export --from chatgpt --to claude --all --safe-mode --no-scrape --export-file ~/Downloads/chatgpt_export.zip
 
+# 2d) same flow for Claude export ZIP
+personaport export --from claude --to chatgpt --all --safe-mode --no-scrape --export-file ~/Downloads/claude_export.zip
+
 # 3) process manual export file directly
 personaport process --file ~/Downloads/chatgpt_export.zip --from chatgpt
 
@@ -102,6 +105,8 @@ personaport migrate --input session --source chatgpt --target claude --all
 
 Run `personaport --help` for global options.
 
+When `--export-file` is provided, PersonaPort parses the file directly and does not require a source-platform browser session.
+
 ## Safe Mode
 
 - `--safe-mode`: Only official export actions, no scraping fallback.
@@ -121,6 +126,13 @@ Run `personaport --help` for global options.
   exports/
   processed/
 ```
+
+## Supported Export Shapes
+
+- ChatGPT ZIP with sharded files like `conversations-000.json` ... `conversations-XYZ.json` (all shards are aggregated).
+- ChatGPT `chat.html` fallback exports.
+- Claude ZIP with `conversations.json`, including attachment-only messages (uses `extracted_content` when text is empty).
+- Large knowledge payloads are chunked into multiple files for target upload when needed.
 
 ## Security Notes
 

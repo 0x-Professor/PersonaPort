@@ -687,6 +687,9 @@ class ConversationProcessor:
                 nested_extracted = self._extract_part_text(value)
                 if nested_extracted:
                     return nested_extracted
+        attachment_text = self._extract_attachment_text(item)
+        if attachment_text:
+            return attachment_text
         return ""
 
     def _extract_part_text(self, value: Any) -> str:
@@ -731,6 +734,32 @@ class ConversationProcessor:
             return f"[{content_type}]"
 
         return ""
+
+    def _extract_attachment_text(self, item: dict[str, Any]) -> str:
+        collected: list[str] = []
+        attachments = item.get("attachments")
+        if isinstance(attachments, list):
+            for attachment in attachments:
+                if not isinstance(attachment, dict):
+                    continue
+                extracted = attachment.get("extracted_content")
+                if isinstance(extracted, str) and extracted.strip():
+                    collected.append(extracted.strip())
+                    continue
+                file_name = attachment.get("file_name")
+                if isinstance(file_name, str) and file_name.strip():
+                    collected.append(f"[Attachment: {file_name.strip()}]")
+
+        files = item.get("files")
+        if isinstance(files, list):
+            for file_item in files:
+                if not isinstance(file_item, dict):
+                    continue
+                file_name = file_item.get("file_name")
+                if isinstance(file_name, str) and file_name.strip():
+                    collected.append(f"[File: {file_name.strip()}]")
+
+        return "\n".join(collected).strip()
 
     def _dedupe_conversations(self, conversations: list[Conversation]) -> list[Conversation]:
         deduped: dict[str, Conversation] = {}

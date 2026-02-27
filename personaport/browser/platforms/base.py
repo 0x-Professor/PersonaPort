@@ -47,7 +47,7 @@ class PlatformAdapter(ABC):
         self,
         page: Page,
         prompt_text: str,
-        knowledge_file: Path | None,
+        knowledge_files: list[Path] | None,
         console: Console,
     ) -> None:
         raise NotImplementedError

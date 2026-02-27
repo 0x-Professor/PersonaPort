@@ -56,6 +56,17 @@ def _render_output_files(console: Any, output_files: dict[str, str]) -> None:
     console.print(table)
 
 
+def _collect_attachment_files(output_files: dict[str, str]) -> list[Path]:
+    chunk_keys = sorted(
+        key for key in output_files.keys() if key.startswith("knowledge_chunk_")
+    )
+    if chunk_keys:
+        return [Path(output_files[key]) for key in chunk_keys]
+    if "knowledge_text" in output_files:
+        return [Path(output_files["knowledge_text"])]
+    return []
+
+
 def _manual_export_markers(platform: Platform) -> set[str]:
     mapping = {
         Platform.CHATGPT: {"chatgpt", "openai", "conversation", "conversations", "export"},
@@ -373,11 +384,12 @@ def export(
             )
             raise typer.Exit(code=0)
 
+        attachment_files = _collect_attachment_files(output_files)
         transfer.inject_to_target(
             target_platform=to_platform,
             state_path=target_state_path,
             prompt_text=artifact.prompt_markdown,
-            knowledge_file=Path(output_files["knowledge_text"]),
+            knowledge_files=attachment_files,
             headless=headless,
         )
 
@@ -588,11 +600,12 @@ def migrate(
             raise typer.BadParameter(
                 f"No saved session for {target.value}. Run `personaport login --platform {target.value}` first."
             )
+        attachment_files = _collect_attachment_files(output_files)
         transfer.inject_to_target(
             target_platform=target,
             state_path=target_state_path,
             prompt_text=artifact.prompt_markdown,
-            knowledge_file=Path(output_files["knowledge_text"]),
+            knowledge_files=attachment_files,
             headless=headless,
         )
 

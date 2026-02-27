@@ -74,16 +74,17 @@ class ChatGPTAdapter(PlatformAdapter):
         self,
         page: Page,
         prompt_text: str,
-        knowledge_file: Path | None,
+        knowledge_files: list[Path] | None,
         console: Console,
     ) -> None:
         page.goto(self.new_chat_url, wait_until="domcontentloaded")
         page.wait_for_timeout(1500)
 
-        if knowledge_file:
-            upload_success = self._try_file_upload(page, knowledge_file)
+        if knowledge_files:
+            upload_success = self._try_file_upload(page, knowledge_files)
             if upload_success:
-                console.print(f"[green]Uploaded knowledge file:[/green] {knowledge_file}")
+                uploaded = ", ".join(str(path) for path in knowledge_files)
+                console.print(f"[green]Uploaded knowledge file(s):[/green] {uploaded}")
 
         if not self._fill_prompt_box(page, prompt_text):
             raise RuntimeError("Unable to find ChatGPT input box to inject migration prompt.")
@@ -221,17 +222,18 @@ class ChatGPTAdapter(PlatformAdapter):
                 continue
         return False
 
-    def _try_file_upload(self, page: Page, path: Path) -> bool:
+    def _try_file_upload(self, page: Page, paths: list[Path]) -> bool:
         selectors = [
             "input[type='file']",
             "input[accept*='text']",
         ]
+        normalized = [str(path) for path in paths]
         for selector in selectors:
             locator = page.locator(selector).first
             if locator.count() == 0:
                 continue
             try:
-                locator.set_input_files(str(path), timeout=1000)
+                locator.set_input_files(normalized, timeout=2000)
                 return True
             except Exception:
                 continue

@@ -157,3 +157,41 @@ def test_processor_parses_chatgpt_sharded_zip_all_files(tmp_path: Path) -> None:
 
     assert len(conversations) == 2
     assert {conversation.id for conversation in conversations} == {"conv-0", "conv-1"}
+
+
+def test_processor_parses_claude_attachment_only_messages(tmp_path: Path) -> None:
+    zip_path = tmp_path / "claude_export.zip"
+    payload = [
+        {
+            "uuid": "claude-attachment-conv",
+            "name": "Attachment Conversation",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:01:00Z",
+            "chat_messages": [
+                {
+                    "sender": "human",
+                    "text": "",
+                    "content": [{"type": "text", "text": ""}],
+                    "attachments": [
+                        {
+                            "file_name": "scope.txt",
+                            "file_type": "txt",
+                            "file_size": 12,
+                            "extracted_content": "program scope details",
+                        }
+                    ],
+                    "files": [],
+                    "created_at": "2026-01-01T00:00:00Z",
+                }
+            ],
+        }
+    ]
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("conversations.json", json.dumps(payload))
+
+    processor = ConversationProcessor(console=get_console())
+    conversations = processor.load_conversations(zip_path, source_platform=Platform.CLAUDE)
+
+    assert len(conversations) == 1
+    assert len(conversations[0].messages) == 1
+    assert "program scope details" in conversations[0].messages[0].content

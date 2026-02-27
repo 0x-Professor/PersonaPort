@@ -11,6 +11,8 @@ from personaport.browser.manager import BrowserManager
 from personaport.browser.platforms import get_platform_adapter
 from personaport.models import Conversation, MigrationArtifact, PersonaProfile, Platform
 
+MAX_KNOWLEDGE_CHUNK_BYTES = 4_000_000
+
 
 class TransferService:
     def __init__(self, *, console: Console, processed_dir: Path) -> None:
@@ -49,7 +51,12 @@ class TransferService:
             ),
         }
         prompt_markdown = template.render(**context).strip()
-        knowledge_text = self._build_knowledge_text(persona, conversation, condensed_history)
+        knowledge_text = self._build_knowledge_text(
+            persona,
+            conversation,
+            condensed_history,
+            full_history,
+        )
         raw_json = {
             "target_platform": target,
             "persona": persona.model_dump(mode="json"),
@@ -86,11 +93,22 @@ class TransferService:
         knowledge_path.write_text(artifact.knowledge_text, encoding="utf-8")
         json_path.write_text(json.dumps(artifact.raw_json, indent=2), encoding="utf-8")
 
-        return {
+        output_files: dict[str, str] = {
             "prompt_markdown": str(prompt_path),
             "knowledge_text": str(knowledge_path),
             "full_json": str(json_path),
         }
+        knowledge_size = len(artifact.knowledge_text.encode("utf-8"))
+        if knowledge_size > MAX_KNOWLEDGE_CHUNK_BYTES:
+            chunks = self._chunk_text_for_upload(
+                artifact.knowledge_text,
+                max_bytes=MAX_KNOWLEDGE_CHUNK_BYTES,
+            )
+            for index, chunk in enumerate(chunks, start=1):
+                chunk_path = destination / f"{basename}_knowledge_part{index:03d}.txt"
+                chunk_path.write_text(chunk, encoding="utf-8")
+                output_files[f"knowledge_chunk_{index:03d}"] = str(chunk_path)
+        return output_files
 
     def inject_to_target(
         self,
@@ -98,14 +116,14 @@ class TransferService:
         target_platform: Platform | str,
         state_path: Path,
         prompt_text: str,
-        knowledge_file: Path | None = None,
+        knowledge_files: list[Path] | None = None,
         headless: bool = False,
     ) -> None:
         adapter = get_platform_adapter(target_platform)
         manager = BrowserManager(state_path=state_path, headless=headless)
         with manager.open() as runtime:
             page = runtime.context.new_page()
-            adapter.inject_payload(page, prompt_text, knowledge_file, self.console)
+            adapter.inject_payload(page, prompt_text, knowledge_files, self.console)
 
     def _template_for_target(self, target_platform: str) -> str:
         mapping = {
@@ -121,6 +139,7 @@ class TransferService:
         persona: PersonaProfile,
         conversation: Conversation,
         condensed_history: str,
+        full_history: str,
     ) -> str:
         facts = "\n".join(f"- {fact}" for fact in persona.extracted_facts) or "- No facts extracted"
         style_notes = "\n".join(f"- {note}" for note in persona.style_notes) or "- No style notes extracted"
@@ -131,4 +150,49 @@ class TransferService:
             f"Style Notes:\n{style_notes}\n\n"
             f"Conversation Title: {conversation.title}\n\n"
             f"Condensed History:\n{condensed_history}\n"
+            f"\nFull Normalized History:\n{full_history}\n"
         )
+
+    def _chunk_text_for_upload(self, text: str, *, max_bytes: int) -> list[str]:
+        chunks: list[str] = []
+        current: list[str] = []
+        current_bytes = 0
+
+        for line in text.splitlines(keepends=True):
+            line_bytes = len(line.encode("utf-8"))
+            if line_bytes > max_bytes:
+                if current:
+                    chunks.append("".join(current))
+                    current = []
+                    current_bytes = 0
+                chunks.extend(self._split_large_line(line, max_bytes=max_bytes))
+                continue
+
+            if current_bytes + line_bytes > max_bytes and current:
+                chunks.append("".join(current))
+                current = [line]
+                current_bytes = line_bytes
+            else:
+                current.append(line)
+                current_bytes += line_bytes
+
+        if current:
+            chunks.append("".join(current))
+        return chunks
+
+    def _split_large_line(self, line: str, *, max_bytes: int) -> list[str]:
+        parts: list[str] = []
+        buffer: list[str] = []
+        buffer_bytes = 0
+        for char in line:
+            char_bytes = len(char.encode("utf-8"))
+            if buffer and buffer_bytes + char_bytes > max_bytes:
+                parts.append("".join(buffer))
+                buffer = [char]
+                buffer_bytes = char_bytes
+            else:
+                buffer.append(char)
+                buffer_bytes += char_bytes
+        if buffer:
+            parts.append("".join(buffer))
+        return parts
