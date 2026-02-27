@@ -253,63 +253,72 @@ def export(
         if not confirm_unsafe_mode(console):
             raise typer.Abort()
 
-    source_state_path = config_manager.session_state_path(app_config, from_platform)
-    if not source_state_path.exists():
-        raise typer.BadParameter(
-            f"No saved session for {from_platform.value}. Run `personaport login --platform {from_platform.value}` first."
-        )
-
-    adapter = get_platform_adapter(from_platform)
-    export_result = None
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        progress.add_task(description=f"Exporting from {from_platform.value}...", total=None)
-        with BrowserManager(
-            state_path=source_state_path,
-            downloads_path=app_config.exports_dir,
-            headless=headless,
-        ).open() as runtime:
-            page = runtime.context.new_page()
-            export_result = adapter.export_data(
-                page,
-                app_config.exports_dir,
-                safe_mode=safe_mode,
-                no_scrape=no_scrape,
-                console=console,
-            )
-
-    if export_result is None:
-        raise typer.BadParameter("Export failed before adapter execution.")
-
-    console.print(export_result.message)
-
     conversations: list[Conversation] = []
-    if export_result.export_path and export_result.export_path.exists():
-        conversations = processor.load_conversations(
-            export_result.export_path, source_platform=from_platform
-        )
-    elif export_result.conversations:
-        conversations = export_result.conversations
-    elif export_file:
+    if export_file:
+        console.print(f"[green]Using manual export file:[/green] {export_file}")
         conversations = processor.load_conversations(
             export_file.expanduser(), source_platform=from_platform
         )
-    elif export_result.status == "manual_required":
-        discovered_export = _wait_for_manual_export_file(
-            platform=from_platform,
-            exports_dir=app_config.exports_dir,
-            not_before=command_started_at,
-            wait_minutes=wait_for_export,
-            console=console,
-        )
-        if discovered_export:
-            console.print(f"[green]Found manual export:[/green] {discovered_export}")
-            conversations = processor.load_conversations(
-                discovered_export, source_platform=from_platform
+    else:
+        source_state_path = config_manager.session_state_path(app_config, from_platform)
+        if not source_state_path.exists():
+            raise typer.BadParameter(
+                f"No saved session for {from_platform.value}. "
+                f"Run `personaport login --platform {from_platform.value}` first, "
+                "or pass `--export-file <path>`."
             )
+
+        adapter = get_platform_adapter(from_platform)
+        export_result = None
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            progress.add_task(description=f"Exporting from {from_platform.value}...", total=None)
+            with BrowserManager(
+                state_path=source_state_path,
+                downloads_path=app_config.exports_dir,
+                headless=headless,
+            ).open() as runtime:
+                page = runtime.context.new_page()
+                export_result = adapter.export_data(
+                    page,
+                    app_config.exports_dir,
+                    safe_mode=safe_mode,
+                    no_scrape=no_scrape,
+                    console=console,
+                )
+
+        if export_result is None:
+            raise typer.BadParameter("Export failed before adapter execution.")
+
+        console.print(export_result.message)
+
+        if export_result.export_path and export_result.export_path.exists():
+            conversations = processor.load_conversations(
+                export_result.export_path, source_platform=from_platform
+            )
+        elif export_result.conversations:
+            conversations = export_result.conversations
+        elif export_result.status == "manual_required":
+            discovered_export = _wait_for_manual_export_file(
+                platform=from_platform,
+                exports_dir=app_config.exports_dir,
+                not_before=command_started_at,
+                wait_minutes=wait_for_export,
+                console=console,
+            )
+            if discovered_export:
+                console.print(f"[green]Found manual export:[/green] {discovered_export}")
+                conversations = processor.load_conversations(
+                    discovered_export, source_platform=from_platform
+                )
+
+    if conversations:
+        console.print(
+            f"[green]Loaded {len(conversations)} conversation(s) from {from_platform.value} export.[/green]"
+        )
 
     if not conversations:
         console.print(
@@ -379,6 +388,11 @@ def process(
     file: Path = typer.Option(..., "--file", exists=True, dir_okay=False),
     from_platform: Platform | None = typer.Option(None, "--from", case_sensitive=False),
     target: Platform = typer.Option(Platform.GENERIC, "--target", case_sensitive=False),
+    all_history: bool = typer.Option(
+        False,
+        "--all",
+        help="Combine all conversations from the input export into one migration bundle.",
+    ),
     persona: str | None = typer.Option(None, "--persona", help="Manual persona override."),
     model: str | None = typer.Option(None, "--model"),
     summarize: bool = typer.Option(
@@ -403,7 +417,11 @@ def process(
     for conversation in conversations:
         cache.save_conversation(conversation)
 
-    if conversation_id:
+    if all_history:
+        selected = processor.combine_conversations(
+            conversations, from_platform or Platform.GENERIC
+        )
+    elif conversation_id:
         selected = next((c for c in conversations if c.id == conversation_id), None)
         if selected is None:
             raise typer.BadParameter(f"Conversation ID not found in file: {conversation_id}")
