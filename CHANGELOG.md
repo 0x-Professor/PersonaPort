@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-02-28
+
 ### Added
 - `personaport --version` global flag.
 - `personaport init` guided setup command.
