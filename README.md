@@ -27,14 +27,22 @@
 
 `gemini` is intentionally conservative in v0.1 (manual guidance + basic automation paths).
 
-## Install
+## Install (PyPI)
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install personaport
+playwright install chromium
+```
+
+## Install (Development)
 
 ```bash
 git clone https://github.com/0x-Professor/PersonaPort.git
-cd personaport
+cd PersonaPort
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -e .
+pip install -e .[dev]
 playwright install chromium
 ```
 
@@ -214,7 +222,7 @@ pytest
 
 ## CI and Lint
 
-GitHub Actions runs on every push and pull request to `master`/`main`:
+GitHub Actions runs on every push and pull request to `develop`, `master`, and `main`:
 
 - `ruff check .`
 - `pytest`
@@ -252,6 +260,14 @@ Trusted publishing troubleshooting:
 - If you see `invalid-publisher` in publish logs, PyPI trusted publisher claims do not match.
 - Verify the repository/workflow/ref in PyPI exactly match the GitHub run claims.
 - Reference: https://docs.pypi.org/trusted-publishers/troubleshooting/
+
+## Branching Model
+
+- `master` (or `main`): stable production branch.
+- `develop`: integration branch for ongoing development.
+- feature branches: branch from `develop`, open PR into `develop`.
+- release PRs: merge `develop` into `master` after validation.
+- version tags/releases are cut from `master`.
 
 ## Development Status
 
