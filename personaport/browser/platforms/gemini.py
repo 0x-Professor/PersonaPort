@@ -33,7 +33,7 @@ class GeminiAdapter(PlatformAdapter):
         page.goto(self.home_url, wait_until="domcontentloaded")
         page.wait_for_timeout(1200)
         console.print(
-            "Gemini export automation is conservative in v0.1. "
+            "[yellow][Experimental][/yellow] Gemini export automation is conservative in v0.1. "
             "Use official Google export/download options when available."
         )
         if safe_mode or no_scrape:

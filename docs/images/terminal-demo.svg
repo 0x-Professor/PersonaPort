@@ -1,0 +1,17 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-label="PersonaPort terminal demo">
+  <rect width="1200" height="680" fill="#0b1220"/>
+  <rect x="24" y="24" width="1152" height="632" rx="12" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <circle cx="52" cy="48" r="7" fill="#ef4444"/>
+  <circle cx="76" cy="48" r="7" fill="#f59e0b"/>
+  <circle cx="100" cy="48" r="7" fill="#22c55e"/>
+  <text x="132" y="53" font-family="Consolas, 'Courier New', monospace" font-size="16" fill="#cbd5e1">PersonaPort Demo</text>
+  <text x="44" y="98" font-family="Consolas, 'Courier New', monospace" font-size="20" fill="#93c5fd">$ personaport export --from chatgpt --to claude --safe-mode --no-scrape</text>
+  <text x="44" y="138" font-family="Consolas, 'Courier New', monospace" font-size="18" fill="#facc15">Using manual export file: ~/Downloads/chatgpt_export.zip</text>
+  <text x="44" y="174" font-family="Consolas, 'Courier New', monospace" font-size="18" fill="#86efac">Loaded 42 conversation(s) from chatgpt export.</text>
+  <text x="44" y="214" font-family="Consolas, 'Courier New', monospace" font-size="18" fill="#facc15">Local LLM unavailable. Allow remote fallback? [y/N]</text>
+  <text x="44" y="254" font-family="Consolas, 'Courier New', monospace" font-size="18" fill="#a5b4fc">Generated Output Files</text>
+  <text x="44" y="294" font-family="Consolas, 'Courier New', monospace" font-size="16" fill="#e2e8f0">prompt_markdown: ~/.personaport/processed/migrate_to_claude.md</text>
+  <text x="44" y="326" font-family="Consolas, 'Courier New', monospace" font-size="16" fill="#e2e8f0">knowledge_text:  ~/.personaport/processed/migrate_to_claude_knowledge.txt</text>
+  <text x="44" y="358" font-family="Consolas, 'Courier New', monospace" font-size="16" fill="#e2e8f0">full_json:       ~/.personaport/processed/migrate_to_claude_full_json.json</text>
+  <text x="44" y="430" font-family="Consolas, 'Courier New', monospace" font-size="16" fill="#94a3b8">Tip: run personaport logout --all to clear saved session tokens.</text>
+</svg>

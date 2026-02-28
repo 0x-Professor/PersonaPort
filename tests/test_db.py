@@ -28,3 +28,16 @@ def test_db_round_trip_conversation(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.id == "conv-1"
     assert len(loaded.messages) == 2
+
+
+def test_db_initializes_schema_version(tmp_path: Path) -> None:
+    db_path = tmp_path / "personaport.db"
+    cache = ConversationCache(db_path)
+
+    with cache._connect() as conn:  # noqa: SLF001 - test-only schema validation
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+
+    assert row is not None
+    assert row["value"] == "1"

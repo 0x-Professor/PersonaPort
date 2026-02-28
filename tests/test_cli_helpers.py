@@ -4,8 +4,12 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from personaport.cli import _find_latest_export_candidate
+import pytest
+import typer
+
+from personaport.cli import _find_latest_export_candidate, _resolve_remote_llm_policy
 from personaport.models import Platform
+from personaport.utils.console import get_console
 
 
 def test_find_latest_export_candidate_filters_and_sorts(tmp_path: Path) -> None:
@@ -30,3 +34,13 @@ def test_find_latest_export_candidate_filters_and_sorts(tmp_path: Path) -> None:
 
     assert candidate is not None
     assert candidate.name == "chatgpt_export_new.zip"
+
+
+def test_resolve_remote_llm_policy_blocks_remote_provider_with_no_remote_flag() -> None:
+    with pytest.raises(typer.BadParameter):
+        _resolve_remote_llm_policy(
+            console=get_console(),
+            provider="groq",
+            model=None,
+            no_remote_llm=True,
+        )

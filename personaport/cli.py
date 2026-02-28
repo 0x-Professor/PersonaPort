@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import typer
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -11,11 +13,20 @@ from rich.prompt import Confirm
 from rich.table import Table
 
 from personaport import __version__
-from personaport.browser.manager import BrowserManager
+from personaport.browser.manager import (
+    BrowserManager,
+    chromium_executable_status,
+    harden_session_state_permissions,
+)
 from personaport.browser.platforms import get_platform_adapter
 from personaport.config import AppConfig, ConfigManager
 from personaport.db import ConversationCache
-from personaport.llm import PROVIDERS, normalize_provider_name, provider_key_env_vars
+from personaport.llm import (
+    PROVIDERS,
+    normalize_provider_name,
+    provider_from_model,
+    provider_key_env_vars,
+)
 from personaport.models import Conversation, Platform, ProcessedHistory
 from personaport.processor import ConversationProcessor
 from personaport.transfer import TransferService
@@ -28,7 +39,8 @@ from personaport.utils.console import (
 
 APP_HELP = (
     f"WARNING: {MANDATORY_WARNING}\n\n"
-    "PersonaPort is a local-first CLI for moving conversation/persona context across AI platforms."
+    "PersonaPort is a local-first CLI for moving conversation/persona context across AI platforms. "
+    "Gemini support is experimental in v0.1."
 )
 
 app = typer.Typer(
@@ -39,6 +51,13 @@ app = typer.Typer(
 )
 provider_app = typer.Typer(help="Manage LLM provider API keys and defaults.")
 app.add_typer(provider_app, name="provider")
+
+
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+    typer.echo(f"personaport {__version__}")
+    raise typer.Exit(code=0)
 
 
 def _get_state(ctx: typer.Context) -> dict[str, Any]:
@@ -69,6 +88,76 @@ def _collect_attachment_files(output_files: dict[str, str]) -> list[Path]:
     if "knowledge_text" in output_files:
         return [Path(output_files["knowledge_text"])]
     return []
+
+
+def _playwright_install_command() -> str:
+    return f"{sys.executable} -m playwright install chromium"
+
+
+def _ensure_chromium_installed(console: Any) -> None:
+    installed, executable = chromium_executable_status()
+    if installed:
+        return
+    cmd = _playwright_install_command()
+    console.print(
+        "[red]Playwright Chromium is not installed.[/red] "
+        f"Run `[bold]{cmd}[/bold]` or `personaport install-deps`."
+    )
+    raise typer.Exit(code=1)
+
+
+def _warn_if_experimental_platform(console: Any, platform: Platform | None) -> None:
+    if platform == Platform.GEMINI:
+        console.print(
+            "[yellow]Gemini support is experimental in v0.1 and may require manual steps.[/yellow]"
+        )
+
+
+def _resolve_remote_llm_policy(
+    *,
+    console: Any,
+    provider: str | None,
+    model: str | None,
+    no_remote_llm: bool,
+) -> tuple[bool, Callable[[str], bool] | None]:
+    model_provider = provider_from_model(model)
+    explicit_remote_model = bool(model_provider and model_provider != "ollama")
+    explicit_remote_provider = bool(provider and provider != "ollama")
+
+    if no_remote_llm and (explicit_remote_provider or explicit_remote_model):
+        raise typer.BadParameter(
+            "--no-remote-llm cannot be used with remote --llm-provider/--model."
+        )
+
+    if no_remote_llm:
+        return False, None
+
+    if explicit_remote_provider or explicit_remote_model:
+        return True, None
+
+    state = {"asked": False, "allowed": True}
+
+    def _prompt(candidate_model: str) -> bool:
+        if state["asked"]:
+            return state["allowed"]
+        state["asked"] = True
+        console.print(
+            "[yellow]Local LLM is unavailable. Remote fallback may send conversation data to hosted providers.[/yellow]"
+        )
+        state["allowed"] = Confirm.ask(
+            f"Allow remote LLM fallback for this run? (next model: {candidate_model})",
+            default=False,
+            console=console,
+        )
+        if not state["allowed"]:
+            console.print("[yellow]Remote LLM fallback disabled for this run.[/yellow]")
+        return state["allowed"]
+
+    return True, _prompt
+
+
+def _first_run_marker(config: AppConfig) -> Path:
+    return config.home_dir / ".onboarding_seen"
 
 
 def _resolve_llm_runtime(
@@ -184,11 +273,19 @@ def main(
     config: Path | None = typer.Option(
         None, "--config", help="Optional config.yaml path override."
     ),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Print PersonaPort version and exit.",
+    ),
 ) -> None:
     console = get_console()
     print_runtime_warning(console)
 
     config_manager = ConfigManager(config_path=config)
+    had_config = config_manager.config_path.exists()
     app_config = config_manager.load()
     cache = ConversationCache(app_config.db_path)
     processor = ConversationProcessor(
@@ -210,11 +307,136 @@ def main(
         "transfer": transfer,
     }
 
+    if not had_config and ctx.invoked_subcommand not in {"init", "install-deps"}:
+        console.print(
+            "[cyan]First run detected.[/cyan] "
+            "Use `personaport init` for guided setup, then `personaport login --platform <name>`."
+        )
+
 
 @app.command("version")
 def version() -> None:
     """Print PersonaPort version."""
     typer.echo(f"personaport {__version__}")
+
+
+@app.command("install-deps")
+def install_deps(
+    ctx: typer.Context,
+    check_only: bool = typer.Option(
+        False,
+        "--check-only",
+        help="Only verify Chromium availability; do not install.",
+    ),
+) -> None:
+    """Install required browser dependencies (Playwright Chromium)."""
+    state = _get_state(ctx)
+    console = state["console"]
+    installed, executable = chromium_executable_status()
+    if installed:
+        console.print(f"[green]Chromium is ready:[/green] {executable}")
+        raise typer.Exit(code=0)
+
+    if check_only:
+        console.print(
+            "[yellow]Chromium is not installed.[/yellow] "
+            f"Run `{_playwright_install_command()}` or `personaport install-deps`."
+        )
+        raise typer.Exit(code=1)
+
+    cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+    console.print(f"[cyan]Running:[/cyan] {' '.join(cmd)}")
+    result = subprocess.run(cmd, check=False)
+    if result.returncode != 0:
+        raise typer.Exit(code=result.returncode)
+
+    installed, executable = chromium_executable_status()
+    if not installed:
+        raise typer.BadParameter(
+            "Playwright install command completed, but Chromium is still unavailable."
+        )
+    console.print(f"[green]Chromium installed:[/green] {executable}")
+
+
+@app.command()
+def init(
+    ctx: typer.Context,
+    install_browser: bool = typer.Option(
+        True,
+        "--install-browser/--skip-install-browser",
+        help="Install Playwright Chromium if missing.",
+    ),
+) -> None:
+    """Guided first-run setup for config and browser runtime."""
+    state = _get_state(ctx)
+    console = state["console"]
+    app_config: AppConfig = state["config"]
+
+    if install_browser:
+        installed, _ = chromium_executable_status()
+        if not installed:
+            install_deps(ctx)
+
+    marker = _first_run_marker(app_config)
+    marker.write_text(
+        datetime.now(timezone.utc).isoformat(),
+        encoding="utf-8",
+    )
+
+    console.print("[green]PersonaPort setup complete.[/green]")
+    console.print("Next steps:")
+    console.print("1) personaport login --platform chatgpt")
+    console.print("2) personaport export --from chatgpt --to claude --safe-mode --no-scrape")
+    console.print("3) personaport migrate --input session --target claude --no-auto-inject")
+
+
+@app.command()
+def logout(
+    ctx: typer.Context,
+    platform: Platform | None = typer.Option(
+        None,
+        "--platform",
+        case_sensitive=False,
+        help="Delete saved session for one platform.",
+    ),
+    all_sessions: bool = typer.Option(
+        False,
+        "--all",
+        help="Delete all saved platform sessions.",
+    ),
+) -> None:
+    """Delete saved browser session state files."""
+    state = _get_state(ctx)
+    console = state["console"]
+    config_manager: ConfigManager = state["config_manager"]
+    app_config: AppConfig = state["config"]
+
+    if not all_sessions and platform is None:
+        raise typer.BadParameter("Use --platform <name> or --all.")
+
+    targets: list[Platform]
+    if all_sessions:
+        targets = [Platform.CHATGPT, Platform.CLAUDE, Platform.GEMINI]
+    elif platform is not None:
+        targets = [platform]
+    else:
+        targets = []
+
+    deleted = 0
+    missing = 0
+    for target in targets:
+        state_path = config_manager.session_state_path(app_config, target)
+        if state_path.exists():
+            state_path.unlink()
+            deleted += 1
+            console.print(f"[green]Deleted session:[/green] {target.value}")
+        else:
+            missing += 1
+
+    if deleted == 0:
+        console.print("[yellow]No matching session files were found.[/yellow]")
+    elif missing > 0:
+        console.print(f"[yellow]Skipped {missing} missing session file(s).[/yellow]")
 
 
 @provider_app.command("list")
@@ -338,6 +560,8 @@ def login(
     console = state["console"]
     config_manager: ConfigManager = state["config_manager"]
     app_config: AppConfig = state["config"]
+    _warn_if_experimental_platform(console, platform)
+    _ensure_chromium_installed(console)
 
     adapter = get_platform_adapter(platform)
     state_path = config_manager.session_state_path(app_config, platform)
@@ -353,6 +577,15 @@ def login(
         )
         runtime.context.storage_state(path=str(state_path))
 
+    if harden_session_state_permissions(state_path):
+        console.print(
+            "[green]Applied restrictive permissions to session file.[/green]"
+        )
+    else:
+        console.print(
+            "[yellow]Could not tighten session file permissions automatically. "
+            "Protect this file manually.[/yellow]"
+        )
     console.print(f"[green]Saved session state:[/green] {state_path}")
 
 
@@ -392,6 +625,11 @@ def export(
         help="Save --api-key in OS keyring for future runs.",
     ),
     model: str | None = typer.Option(None, "--model", help="Override LiteLLM model."),
+    no_remote_llm: bool = typer.Option(
+        False,
+        "--no-remote-llm",
+        help="Keep LLM processing local-only (blocks hosted-provider fallback).",
+    ),
     export_file: Path | None = typer.Option(
         None,
         "--export-file",
@@ -425,11 +663,19 @@ def export(
     processor: ConversationProcessor = state["processor"]
     transfer: TransferService = state["transfer"]
     command_started_at = datetime.now(timezone.utc)
+    _warn_if_experimental_platform(console, from_platform)
+    _warn_if_experimental_platform(console, to_platform)
     selected_provider, runtime_api_keys = _resolve_llm_runtime(
         config_manager=config_manager,
         provider=llm_provider,
         api_key=api_key,
         save_api_key=save_api_key,
+    )
+    allow_remote_llm, remote_prompt = _resolve_remote_llm_policy(
+        console=console,
+        provider=selected_provider,
+        model=model,
+        no_remote_llm=no_remote_llm,
     )
 
     if not safe_mode and not no_scrape:
@@ -443,6 +689,7 @@ def export(
             export_file.expanduser(), source_platform=from_platform
         )
     else:
+        _ensure_chromium_installed(console)
         source_state_path = config_manager.session_state_path(app_config, from_platform)
         if not source_state_path.exists():
             raise typer.BadParameter(
@@ -527,6 +774,8 @@ def export(
         provider=selected_provider,
         api_keys=runtime_api_keys,
         use_llm=True,
+        allow_remote_fallback=allow_remote_llm,
+        remote_fallback_prompt=remote_prompt,
     )
     cache.save_persona(persona)
 
@@ -537,6 +786,8 @@ def export(
         provider=selected_provider,
         api_keys=runtime_api_keys,
         use_llm=True,
+        allow_remote_fallback=allow_remote_llm,
+        remote_fallback_prompt=remote_prompt,
     )
     context_map = processor.build_context_map(conversations)
     artifact = transfer.build_artifact(
@@ -562,6 +813,7 @@ def export(
     cache.save_processed_history(processed)
 
     if to_platform and auto_inject:
+        _ensure_chromium_installed(console)
         if not _confirm_target_injection(console, to_platform):
             console.print("[yellow]Injection cancelled by user. Output files were generated.[/yellow]")
             raise typer.Exit(code=0)
@@ -611,6 +863,11 @@ def process(
         help="Save --api-key in OS keyring for future runs.",
     ),
     model: str | None = typer.Option(None, "--model"),
+    no_remote_llm: bool = typer.Option(
+        False,
+        "--no-remote-llm",
+        help="Keep LLM processing local-only (blocks hosted-provider fallback).",
+    ),
     summarize: bool = typer.Option(
         True, "--summarize/--no-summarize", help="Condense history for context windows."
     ),
@@ -626,12 +883,20 @@ def process(
     processor: ConversationProcessor = state["processor"]
     transfer: TransferService = state["transfer"]
     config_manager: ConfigManager = state["config_manager"]
+    _warn_if_experimental_platform(console, from_platform)
+    _warn_if_experimental_platform(console, target)
 
     selected_provider, runtime_api_keys = _resolve_llm_runtime(
         config_manager=config_manager,
         provider=llm_provider,
         api_key=api_key,
         save_api_key=save_api_key,
+    )
+    allow_remote_llm, remote_prompt = _resolve_remote_llm_policy(
+        console=console,
+        provider=selected_provider,
+        model=model,
+        no_remote_llm=no_remote_llm,
     )
 
     conversations = processor.load_conversations(file, source_platform=from_platform)
@@ -659,6 +924,8 @@ def process(
         provider=selected_provider,
         api_keys=runtime_api_keys,
         use_llm=True,
+        allow_remote_fallback=allow_remote_llm,
+        remote_fallback_prompt=remote_prompt,
     )
     cache.save_persona(persona_profile)
 
@@ -669,6 +936,8 @@ def process(
             provider=selected_provider,
             api_keys=runtime_api_keys,
             use_llm=True,
+            allow_remote_fallback=allow_remote_llm,
+            remote_fallback_prompt=remote_prompt,
         )
         if summarize
         else selected.to_history_text()
@@ -733,6 +1002,11 @@ def migrate(
         help="Save --api-key in OS keyring for future runs.",
     ),
     model: str | None = typer.Option(None, "--model"),
+    no_remote_llm: bool = typer.Option(
+        False,
+        "--no-remote-llm",
+        help="Keep LLM processing local-only (blocks hosted-provider fallback).",
+    ),
     auto_inject: bool = typer.Option(
         True,
         "--auto-inject/--no-auto-inject",
@@ -748,11 +1022,19 @@ def migrate(
     cache: ConversationCache = state["cache"]
     processor: ConversationProcessor = state["processor"]
     transfer: TransferService = state["transfer"]
+    _warn_if_experimental_platform(console, source)
+    _warn_if_experimental_platform(console, target)
     selected_provider, runtime_api_keys = _resolve_llm_runtime(
         config_manager=config_manager,
         provider=llm_provider,
         api_key=api_key,
         save_api_key=save_api_key,
+    )
+    allow_remote_llm, remote_prompt = _resolve_remote_llm_policy(
+        console=console,
+        provider=selected_provider,
+        model=model,
+        no_remote_llm=no_remote_llm,
     )
 
     selected_conversation: Conversation | None = None
@@ -814,6 +1096,8 @@ def migrate(
         provider=selected_provider,
         api_keys=runtime_api_keys,
         use_llm=True,
+        allow_remote_fallback=allow_remote_llm,
+        remote_fallback_prompt=remote_prompt,
     )
     cache.save_persona(persona_profile)
 
@@ -823,6 +1107,8 @@ def migrate(
         provider=selected_provider,
         api_keys=runtime_api_keys,
         use_llm=True,
+        allow_remote_fallback=allow_remote_llm,
+        remote_fallback_prompt=remote_prompt,
     )
     context_map = processor.build_context_map(source_conversations)
     artifact = transfer.build_artifact(
@@ -848,6 +1134,7 @@ def migrate(
     cache.save_processed_history(processed)
 
     if auto_inject:
+        _ensure_chromium_installed(console)
         if not _confirm_target_injection(console, target):
             console.print("[yellow]Injection cancelled by user. Output files were generated.[/yellow]")
             raise typer.Exit(code=0)

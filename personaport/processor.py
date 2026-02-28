@@ -19,6 +19,7 @@ from personaport.llm import (
     PROVIDERS,
     candidate_models,
     normalize_provider_name,
+    provider_from_model,
     provider_key_env_vars,
     read_provider_key_from_env,
     resolve_provider_for_model,
@@ -204,6 +205,8 @@ class ConversationProcessor:
         provider: str | None = None,
         api_keys: dict[str, str] | None = None,
         use_llm: bool = True,
+        allow_remote_fallback: bool = True,
+        remote_fallback_prompt: Callable[[str], bool] | None = None,
     ) -> PersonaProfile:
         if persona_override:
             return PersonaProfile(
@@ -221,6 +224,8 @@ class ConversationProcessor:
                 model=model,
                 provider=provider,
                 api_keys=api_keys,
+                allow_remote_fallback=allow_remote_fallback,
+                remote_fallback_prompt=remote_fallback_prompt,
             )
             if result is not None:
                 result.source_conversation_ids = [c.id for c in conversations]
@@ -237,6 +242,8 @@ class ConversationProcessor:
         api_keys: dict[str, str] | None = None,
         use_llm: bool = True,
         max_chars: int | None = None,
+        allow_remote_fallback: bool = True,
+        remote_fallback_prompt: Callable[[str], bool] | None = None,
     ) -> str:
         max_chars = max_chars or self.max_context_chars
         full_text = conversation.to_history_text()
@@ -250,6 +257,8 @@ class ConversationProcessor:
                 provider=provider,
                 api_keys=api_keys,
                 max_chars=max_chars,
+                allow_remote_fallback=allow_remote_fallback,
+                remote_fallback_prompt=remote_fallback_prompt,
             )
             if summary:
                 return summary
@@ -303,7 +312,7 @@ class ConversationProcessor:
         )
 
     def _load_json_payload(self, path: Path) -> Any:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
 
     def _parse_payload_by_platform(self, payload: Any, platform: str) -> list[Conversation]:
         if platform == Platform.CHATGPT.value:
@@ -621,6 +630,8 @@ class ConversationProcessor:
         model: str | None = None,
         provider: str | None = None,
         api_keys: dict[str, str] | None = None,
+        allow_remote_fallback: bool = True,
+        remote_fallback_prompt: Callable[[str], bool] | None = None,
     ) -> PersonaProfile | None:
         message_content = self._run_completion_with_fallback(
             messages=[
@@ -642,6 +653,8 @@ class ConversationProcessor:
             provider=provider,
             api_keys=api_keys,
             purpose="persona extraction",
+            allow_remote_fallback=allow_remote_fallback,
+            remote_fallback_prompt=remote_fallback_prompt,
         )
         if not message_content:
             return None
@@ -718,6 +731,8 @@ class ConversationProcessor:
         provider: str | None = None,
         api_keys: dict[str, str] | None = None,
         max_chars: int,
+        allow_remote_fallback: bool = True,
+        remote_fallback_prompt: Callable[[str], bool] | None = None,
     ) -> str | None:
         chunks = self._chunk_text(text, chunk_size=self.max_chunk_chars)
         chunk_summaries: list[str] = []
@@ -739,6 +754,8 @@ class ConversationProcessor:
                 provider=provider,
                 api_keys=api_keys,
                 purpose="history summarization",
+                allow_remote_fallback=allow_remote_fallback,
+                remote_fallback_prompt=remote_fallback_prompt,
             )
             if not summary:
                 return None
@@ -907,11 +924,18 @@ class ConversationProcessor:
         provider: str | None,
         api_keys: dict[str, str] | None,
         purpose: str,
+        allow_remote_fallback: bool = True,
+        remote_fallback_prompt: Callable[[str], bool] | None = None,
     ) -> str | None:
         if completion is None:
             return None
 
         selected_provider = normalize_provider_name(provider, allow_custom=True)
+        explicit_remote_selection = self._has_explicit_remote_selection(
+            selected_provider=selected_provider,
+            selected_model=model,
+        )
+        remote_fallback_allowed = allow_remote_fallback
         models = candidate_models(
             selected_model=model,
             selected_provider=selected_provider,
@@ -919,8 +943,19 @@ class ConversationProcessor:
         )
         attempt_count = 0
         had_runtime_error = False
+        skipped_remote = False
         for candidate in models:
             provider_for_model = resolve_provider_for_model(candidate, selected_provider)
+            if self._is_remote_provider(provider_for_model):
+                if not remote_fallback_allowed:
+                    skipped_remote = True
+                    continue
+                if not explicit_remote_selection and remote_fallback_prompt is not None:
+                    remote_fallback_allowed = bool(remote_fallback_prompt(candidate))
+                    if not remote_fallback_allowed:
+                        skipped_remote = True
+                        continue
+
             api_key = self._resolve_provider_key(provider_for_model, api_keys)
             if self._provider_requires_key(provider_for_model) and not api_key:
                 continue
@@ -942,11 +977,24 @@ class ConversationProcessor:
                 continue
 
         if attempt_count == 0:
+            if skipped_remote:
+                self._notify_llm_fallback_once(
+                    f"LiteLLM {purpose} stayed in local mode; remote fallback is disabled. Using heuristics."
+                )
+                return None
             self._notify_llm_fallback_once(
                 f"LiteLLM {purpose} skipped: no reachable configured provider/model. Using heuristics."
             )
             return None
         if had_runtime_error:
+            if skipped_remote and not remote_fallback_allowed:
+                self._notify_llm_fallback_once(
+                    (
+                        f"LiteLLM {purpose} unavailable in local mode, and remote fallback is "
+                        "disabled. Using heuristics."
+                    )
+                )
+                return None
             self._notify_llm_fallback_once(
                 (
                     f"LiteLLM {purpose} unavailable (provider/network/rate-limit). "
@@ -954,6 +1002,22 @@ class ConversationProcessor:
                 )
             )
         return None
+
+    def _is_remote_provider(self, provider: str | None) -> bool:
+        if not provider:
+            return False
+        return provider != "ollama"
+
+    def _has_explicit_remote_selection(
+        self,
+        *,
+        selected_provider: str | None,
+        selected_model: str | None,
+    ) -> bool:
+        if selected_provider and selected_provider != "ollama":
+            return True
+        model_provider = provider_from_model(selected_model)
+        return bool(model_provider and model_provider != "ollama")
 
     def _resolve_provider_key(
         self,

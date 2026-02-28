@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
+import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
 from playwright.sync_api import Browser, BrowserContext, Playwright, sync_playwright
+
+CHROMIUM_INSTALL_CMD = "python -m playwright install chromium"
 
 
 @dataclass
@@ -55,3 +59,25 @@ class BrowserManager:
                     context.close()
                 finally:
                     browser.close()
+
+
+def chromium_executable_status() -> tuple[bool, Path | None]:
+    try:
+        with sync_playwright() as playwright:
+            executable_path = Path(playwright.chromium.executable_path)
+    except Exception:
+        return False, None
+    return executable_path.exists(), executable_path
+
+
+def harden_session_state_permissions(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        if os.name == "nt":
+            os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+        else:
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        return True
+    except OSError:
+        return False

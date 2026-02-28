@@ -9,6 +9,8 @@ from typing import Iterator
 
 from personaport.models import Conversation, PersonaProfile, ProcessedHistory
 
+SCHEMA_VERSION = 1
+
 
 class ConversationCache:
     def __init__(self, db_path: Path) -> None:
@@ -29,6 +31,11 @@ class ConversationCache:
         with self._connect() as conn:
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS schema_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
                     source_platform TEXT NOT NULL,
@@ -60,6 +67,49 @@ class ConversationCache:
                 );
                 """
             )
+            self._ensure_schema_version(conn)
+
+    def _ensure_schema_version(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+            return
+
+        try:
+            current_version = int(row["value"])
+        except (TypeError, ValueError):
+            current_version = 0
+
+        if current_version > SCHEMA_VERSION:
+            raise RuntimeError(
+                "Database schema is newer than this PersonaPort build. "
+                "Upgrade PersonaPort before using this database."
+            )
+
+        if current_version < SCHEMA_VERSION:
+            self._migrate_schema(conn, from_version=current_version, to_version=SCHEMA_VERSION)
+            conn.execute(
+                "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+                (str(SCHEMA_VERSION),),
+            )
+
+    def _migrate_schema(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        from_version: int,
+        to_version: int,
+    ) -> None:
+        version = from_version
+        while version < to_version:
+            next_version = version + 1
+            # Reserved for future migrations.
+            version = next_version
 
     def save_conversation(self, conversation: Conversation) -> None:
         with self._connect() as conn:
