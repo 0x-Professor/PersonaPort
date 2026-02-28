@@ -16,11 +16,11 @@ def test_provider_from_model_detects_prefix() -> None:
 
 def test_candidate_models_includes_provider_default_and_fallbacks() -> None:
     models = candidate_models(
-        selected_model="openai/gpt-oss-20b",
+        selected_model="llama-3.1-8b-instant",
         selected_provider="groq",
         default_model="ollama/llama3.1:8b",
     )
 
-    assert "openai/gpt-oss-20b" in models
-    assert "groq/openai/gpt-oss-20b" in models
-    assert models[0] == "groq/openai/gpt-oss-20b"
+    assert "llama-3.1-8b-instant" in models
+    assert "groq/llama-3.1-8b-instant" in models
+    assert models[0] == "groq/llama-3.1-8b-instant"

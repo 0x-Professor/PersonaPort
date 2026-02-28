@@ -55,6 +55,7 @@ include = [
   "/personaport",
   "/tests",
   "/README.md",
+  "/CHANGELOG.md",
   "/LICENSE",
   "/pyproject.toml",
 ]

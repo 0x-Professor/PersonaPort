@@ -36,6 +36,28 @@ def test_processor_parses_personaport_json(tmp_path: Path) -> None:
     assert conversations[0].messages[0].role == MessageRole.USER
 
 
+def test_processor_parses_json_with_utf8_bom(tmp_path: Path) -> None:
+    export_path = tmp_path / "export_bom.json"
+    payload = [
+        {
+            "id": "bom-1",
+            "title": "BOM",
+            "source_platform": "chatgpt",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "messages": [{"role": "user", "content": "hello"}],
+            "metadata": {},
+        }
+    ]
+    export_path.write_text(json.dumps(payload), encoding="utf-8-sig")
+
+    processor = ConversationProcessor(console=get_console())
+    conversations = processor.load_conversations(export_path)
+
+    assert len(conversations) == 1
+    assert conversations[0].id == "bom-1"
+
+
 def test_persona_extraction_heuristic_fallback() -> None:
     processor = ConversationProcessor(console=get_console())
     conversation = Conversation(

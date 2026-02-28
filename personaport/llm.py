@@ -33,9 +33,9 @@ PROVIDERS: dict[str, ProviderSpec] = {
     "groq": ProviderSpec(
         name="groq",
         display_name="Groq",
-        default_model="groq/openai/gpt-oss-20b",
+        default_model="groq/llama-3.1-8b-instant",
         key_env_vars=("GROQ_API_KEY",),
-        notes="Fast hosted inference. Supports gpt-oss models on Groq.",
+        notes="Fast hosted inference for Llama, Mixtral, and other hosted models.",
     ),
     "openrouter": ProviderSpec(
         name="openrouter",
@@ -73,7 +73,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
 
 FALLBACK_MODEL_CHAIN: tuple[str, ...] = (
     "ollama/llama3.1:8b",
-    "groq/openai/gpt-oss-20b",
+    "groq/llama-3.1-8b-instant",
     "openrouter/meta-llama/llama-3.3-70b-instruct:free",
 )
 
