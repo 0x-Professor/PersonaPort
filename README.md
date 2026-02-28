@@ -16,8 +16,9 @@
 1. Opens source platform in a visible browser and reuses saved session.
 1. Triggers official export flow (safe mode) or fallback scraping (unsafe mode).
 1. Normalizes history into a neutral schema.
-1. Extracts persona and optionally summarizes long threads using LiteLLM (Ollama-friendly).
-1. Opens target platform and injects migration prompt + optional knowledge file.
+1. Extracts persona and compresses history into a compact migration map (topics, tasks, goals, priority threads).
+1. Uses LiteLLM provider routing with local-first fallback (`ollama` first, then hosted providers if configured).
+1. Opens target platform and injects migration prompt + optional knowledge files only after interactive confirmation.
 
 ## Supported Platforms
 
@@ -74,6 +75,13 @@ personaport login --platform claude
 # 2) safe export + process + migrate package output
 personaport export --from chatgpt --to claude --all --safe-mode --no-scrape
 
+# 2a) configure provider key once (stored in OS keyring)
+personaport provider set-key --provider groq
+
+# 2b) process using a selected provider/model for persona + summarization
+personaport process --file ~/Downloads/chatgpt_export.zip --from chatgpt \
+  --target claude --all --llm-provider groq --model openai/gpt-oss-20b
+
 # 2b) safe export but continue automatically once you download ZIP from email link
 personaport export --from chatgpt --to claude --all --safe-mode --no-scrape --wait-for-export 10
 
@@ -100,8 +108,11 @@ personaport migrate --input session --source chatgpt --target claude --all
 
 - `personaport login --platform <chatgpt|claude|gemini>`
 - `personaport export --from <platform> --to <platform> --all [--safe-mode] [--no-scrape] [--export-file path] [--wait-for-export N]`
-- `personaport process --file <export.zip|json> [--from platform] [--all] [--persona "..."]`
-- `personaport migrate --input <session|conversation_id|file> --target <platform> [--all]`
+- `personaport process --file <export.zip|json> [--from platform] [--all] [--persona "..."] [--llm-provider ...] [--model ...]`
+- `personaport migrate --input <session|conversation_id|file> --target <platform> [--all] [--llm-provider ...] [--model ...]`
+- `personaport provider list`
+- `personaport provider set-key --provider <name>`
+- `personaport provider delete-key --provider <name>`
 
 Run `personaport --help` for global options.
 
@@ -133,6 +144,52 @@ When `--export-file` is provided, PersonaPort parses the file directly and does 
 - ChatGPT `chat.html` fallback exports.
 - Claude ZIP with `conversations.json`, including attachment-only messages (uses `extracted_content` when text is empty).
 - Large knowledge payloads are chunked into multiple files for target upload when needed.
+- Migration output is compact by default: no full-history dump in upload text; full normalized data remains in local JSON artifacts.
+
+## LLM Providers and Keys
+
+Supported summarization/persona providers:
+
+- `ollama` (local, no key)
+- `groq`
+- `openrouter`
+- `openai`
+- `anthropic`
+- `gemini`
+- `together`
+
+Per-run key injection:
+
+```bash
+personaport process --file export.zip --llm-provider groq --api-key "<key>"
+```
+
+Provider + model routing example (explicit provider, model name, and temporary key):
+
+```bash
+personaport process --file export.zip --from chatgpt --target claude \
+  --llm-provider groq --model openai/gpt-oss-20b --api-key "<groq-key>"
+```
+
+You can also pass custom providers not pre-listed (for LiteLLM-compatible routes):
+
+```bash
+personaport process --file export.zip --llm-provider myprovider --model myprovider/my-model
+```
+
+Persist key in OS keyring:
+
+```bash
+personaport provider set-key --provider groq
+personaport process --file export.zip --llm-provider groq --model openai/gpt-oss-20b
+```
+
+Fallback order when model/provider fails:
+
+1. user-selected model
+2. provider default model
+3. configured default model (`config.yaml`)
+4. built-in chain (`ollama/llama3.1:8b`, `groq/openai/gpt-oss-20b`, `openrouter/...:free`)
 
 ## Security Notes
 

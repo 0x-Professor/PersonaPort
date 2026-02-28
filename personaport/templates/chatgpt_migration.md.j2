@@ -11,5 +11,19 @@
 # CHAT HISTORY CONTEXT
 {{ condensed_history }}
 
+{% if context_map.open_tasks %}
+# OPEN TASKS
+{% for task in context_map.open_tasks %}
+- {{ task }}
+{% endfor %}
+{% endif %}
+
+{% if context_map.top_topics %}
+# WORK TOPICS
+{% for item in context_map.top_topics[:10] %}
+- {{ item.topic }} ({{ item.frequency }})
+{% endfor %}
+{% endif %}
+
 # CONTINUE TASK
 {{ continue_instruction }}
