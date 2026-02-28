@@ -195,3 +195,52 @@ def test_processor_parses_claude_attachment_only_messages(tmp_path: Path) -> Non
     assert len(conversations) == 1
     assert len(conversations[0].messages) == 1
     assert "program scope details" in conversations[0].messages[0].content
+
+
+def test_build_context_map_prioritizes_topics_and_tasks() -> None:
+    processor = ConversationProcessor(console=get_console())
+    conversation = Conversation(
+        id="ctx-1",
+        title="API Refactor",
+        source_platform=Platform.CHATGPT,
+        messages=[
+            ChatMessage(
+                role=MessageRole.USER,
+                content="Need to migrate FastAPI auth and fix token refresh issue.",
+            ),
+            ChatMessage(role=MessageRole.ASSISTANT, content="Let's update auth middleware."),
+            ChatMessage(
+                role=MessageRole.USER,
+                content="Next step is to ship API migration and finalize deployment.",
+            ),
+        ],
+    )
+
+    context_map = processor.build_context_map([conversation])
+
+    topics = {item["topic"] for item in context_map["top_topics"]}
+    assert "api" in topics
+    assert context_map["open_tasks"]
+    assert context_map["priority_threads"][0]["title"] == "API Refactor"
+
+
+def test_condense_history_heuristic_includes_open_tasks() -> None:
+    processor = ConversationProcessor(console=get_console())
+    conversation = Conversation(
+        id="condense-1",
+        title="Deploy Plan",
+        source_platform=Platform.CLAUDE,
+        messages=[
+            ChatMessage(role=MessageRole.USER, content="We need to fix the CI issue today."),
+            ChatMessage(role=MessageRole.ASSISTANT, content="I can help with that."),
+            ChatMessage(role=MessageRole.USER, content="Next step is deploy after tests pass."),
+        ],
+    )
+    condensed = processor.condense_history(
+        conversation,
+        use_llm=False,
+        max_chars=80,
+    )
+
+    assert "Active tasks" in condensed
+    assert "fix the CI issue" in condensed

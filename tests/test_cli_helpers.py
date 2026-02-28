@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,9 +17,10 @@ def test_find_latest_export_candidate_filters_and_sorts(tmp_path: Path) -> None:
     newer.write_text("new", encoding="utf-8")
     ignored.write_text("ignore", encoding="utf-8")
 
-    # Ensure mtime ordering is deterministic.
-    older.touch()
-    newer.touch()
+    # Ensure mtime ordering is deterministic across filesystems with coarse precision.
+    base_ts = datetime.now(timezone.utc).timestamp()
+    os.utime(older, (base_ts - 10, base_ts - 10))
+    os.utime(newer, (base_ts, base_ts))
 
     candidate = _find_latest_export_candidate(
         platform=Platform.CHATGPT,

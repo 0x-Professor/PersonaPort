@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from jinja2 import Environment, PackageLoader, select_autoescape
 from rich.console import Console
@@ -32,12 +33,14 @@ class TransferService:
         persona: PersonaProfile,
         *,
         condensed_history: str,
+        context_map: dict[str, Any] | None = None,
         target_platform: Platform | str,
     ) -> MigrationArtifact:
         target = target_platform.value if isinstance(target_platform, Platform) else str(target_platform)
         template_name = self._template_for_target(target)
         template = self.templates.get_template(template_name)
         full_history = conversation.to_history_text()
+        context_map = context_map or {}
 
         context = {
             "persona_system_prompt": persona.system_prompt.strip(),
@@ -46,6 +49,7 @@ class TransferService:
             "conversation_title": conversation.title,
             "condensed_history": condensed_history.strip(),
             "full_history": full_history.strip(),
+            "context_map": context_map,
             "continue_instruction": (
                 "Continue from the latest unresolved task and keep response style consistent."
             ),
@@ -55,12 +59,13 @@ class TransferService:
             persona,
             conversation,
             condensed_history,
-            full_history,
+            context_map,
         )
         raw_json = {
             "target_platform": target,
             "persona": persona.model_dump(mode="json"),
             "conversation": conversation.model_dump(mode="json"),
+            "context_map": context_map,
             "condensed_history": condensed_history,
             "prompt_markdown": prompt_markdown,
             "knowledge_text": knowledge_text,
@@ -139,18 +144,58 @@ class TransferService:
         persona: PersonaProfile,
         conversation: Conversation,
         condensed_history: str,
-        full_history: str,
+        context_map: dict[str, Any],
     ) -> str:
         facts = "\n".join(f"- {fact}" for fact in persona.extracted_facts) or "- No facts extracted"
         style_notes = "\n".join(f"- {note}" for note in persona.style_notes) or "- No style notes extracted"
+        topic_lines = "\n".join(
+            f"- {item['topic']} ({item['frequency']})"
+            for item in context_map.get("top_topics", [])
+            if isinstance(item, dict) and item.get("topic")
+        ) or "- No high-frequency topics detected"
+        work_lines = "\n".join(
+            f"- {item['area']} ({item['frequency']})"
+            for item in context_map.get("work_profile", [])
+            if isinstance(item, dict) and item.get("area")
+        ) or "- No work profile inferred"
+        task_lines = "\n".join(
+            f"- {line}" for line in context_map.get("open_tasks", []) if isinstance(line, str)
+        ) or "- No open tasks extracted"
+        goal_lines = "\n".join(
+            f"- {line}" for line in context_map.get("goals", []) if isinstance(line, str)
+        ) or "- No goals extracted"
+        decision_lines = "\n".join(
+            f"- {line}" for line in context_map.get("decisions", []) if isinstance(line, str)
+        ) or "- No decisions extracted"
+
+        thread_lines = [
+            f"- {item.get('title', 'Untitled')} | score={item.get('score', 0)} | "
+            f"messages={item.get('message_count', 0)} | focus={item.get('focus', '')}"
+            for item in context_map.get("priority_threads", [])
+            if isinstance(item, dict)
+        ]
+        priority_threads = "\n".join(thread_lines) or "- No priority threads ranked"
+
+        stats = context_map.get("stats", {}) if isinstance(context_map, dict) else {}
+        stats_block = (
+            f"Conversations: {stats.get('conversation_count', 0)}\n"
+            f"Messages: {stats.get('message_count', 0)}\n"
+            f"User messages: {stats.get('user_message_count', 0)}"
+        )
         return (
             f"Persona Name: {persona.name}\n\n"
             f"System Prompt:\n{persona.system_prompt}\n\n"
             f"Extracted Facts:\n{facts}\n\n"
             f"Style Notes:\n{style_notes}\n\n"
+            f"Conversation Stats:\n{stats_block}\n\n"
+            f"Top Topics (frequency-ranked):\n{topic_lines}\n\n"
+            f"Work Profile:\n{work_lines}\n\n"
+            f"Open Tasks:\n{task_lines}\n\n"
+            f"User Goals:\n{goal_lines}\n\n"
+            f"Key Decisions:\n{decision_lines}\n\n"
+            f"Priority Threads:\n{priority_threads}\n\n"
             f"Conversation Title: {conversation.title}\n\n"
             f"Condensed History:\n{condensed_history}\n"
-            f"\nFull Normalized History:\n{full_history}\n"
         )
 
     def _chunk_text_for_upload(self, text: str, *, max_bytes: int) -> list[str]:

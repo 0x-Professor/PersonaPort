@@ -9,6 +9,7 @@ import yaml
 from keyring.errors import KeyringError
 from pydantic import BaseModel, ConfigDict
 
+from personaport.llm import provider_secret_name
 from personaport.models import Platform
 
 SERVICE_NAME = "personaport"
@@ -106,6 +107,22 @@ class ConfigManager:
             return keyring.get_password(SERVICE_NAME, key)
         except KeyringError:
             return None
+
+    def delete_secret(self, key: str) -> bool:
+        try:
+            keyring.delete_password(SERVICE_NAME, key)
+            return True
+        except Exception:
+            return False
+
+    def set_provider_key(self, provider: str, api_key: str) -> bool:
+        return self.set_secret(provider_secret_name(provider), api_key)
+
+    def get_provider_key(self, provider: str) -> str | None:
+        return self.get_secret(provider_secret_name(provider))
+
+    def delete_provider_key(self, provider: str) -> bool:
+        return self.delete_secret(provider_secret_name(provider))
 
     def _default_config(self) -> AppConfig:
         return AppConfig(

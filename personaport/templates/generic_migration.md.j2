@@ -11,8 +11,26 @@
 # CONDENSED HISTORY
 {{ condensed_history }}
 
-# FULL HISTORY
-{{ full_history }}
+{% if context_map.top_topics %}
+# TOP TOPICS (frequency-ranked)
+{% for item in context_map.top_topics %}
+- {{ item.topic }} ({{ item.frequency }})
+{% endfor %}
+{% endif %}
+
+{% if context_map.open_tasks %}
+# OPEN TASKS
+{% for task in context_map.open_tasks %}
+- {{ task }}
+{% endfor %}
+{% endif %}
+
+{% if context_map.priority_threads %}
+# PRIORITY THREADS
+{% for thread in context_map.priority_threads %}
+- {{ thread.title }} | score={{ thread.score }} | focus={{ thread.focus }}
+{% endfor %}
+{% endif %}
 
 # CONTINUE FROM HERE
 {{ continue_instruction }}

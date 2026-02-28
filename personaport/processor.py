@@ -3,15 +3,26 @@ from __future__ import annotations
 import hashlib
 import html as html_lib
 import json
+import os
 import re
 import zipfile
+from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from rich.console import Console
 
+from personaport.llm import (
+    PROVIDERS,
+    candidate_models,
+    normalize_provider_name,
+    provider_key_env_vars,
+    read_provider_key_from_env,
+    resolve_provider_for_model,
+)
 from personaport.models import (
     ChatMessage,
     Conversation,
@@ -21,9 +32,107 @@ from personaport.models import (
 )
 
 try:
+    import litellm
     from litellm import completion
 except Exception:  # pragma: no cover - defensive import fallback
+    litellm = None
     completion = None
+
+TOKEN_PATTERN = re.compile(r"[a-zA-Z][a-zA-Z0-9_+-]{2,}")
+TASK_MARKERS = (
+    "todo",
+    "to do",
+    "next step",
+    "next steps",
+    "need to",
+    "must",
+    "blocked",
+    "stuck",
+    "issue",
+    "fix",
+    "error",
+    "deadline",
+    "ship",
+)
+DECISION_MARKERS = (
+    "decided",
+    "we chose",
+    "we will",
+    "let's use",
+    "selected",
+    "finalize",
+    "approved",
+)
+GOAL_MARKERS = (
+    "build",
+    "create",
+    "implement",
+    "migrate",
+    "deploy",
+    "design",
+    "optimize",
+)
+STOPWORDS = {
+    "about",
+    "above",
+    "after",
+    "again",
+    "also",
+    "and",
+    "any",
+    "are",
+    "because",
+    "been",
+    "before",
+    "being",
+    "below",
+    "between",
+    "both",
+    "but",
+    "could",
+    "does",
+    "doing",
+    "down",
+    "each",
+    "from",
+    "have",
+    "having",
+    "here",
+    "into",
+    "just",
+    "like",
+    "many",
+    "more",
+    "most",
+    "other",
+    "over",
+    "same",
+    "some",
+    "such",
+    "than",
+    "that",
+    "their",
+    "them",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "through",
+    "very",
+    "want",
+    "with",
+    "your",
+    "you",
+}
+WORK_AREA_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "backend": ("api", "backend", "database", "sql", "fastapi", "django", "flask"),
+    "frontend": ("react", "vue", "frontend", "ui", "css", "tailwind", "figma"),
+    "devops": ("docker", "kubernetes", "ci", "deploy", "aws", "gcp", "azure"),
+    "data-ai": ("llm", "model", "prompt", "embedding", "rag", "fine-tune", "agent"),
+    "security": ("auth", "oauth", "security", "vulnerability", "encryption", "token"),
+}
 
 
 class ConversationProcessor:
@@ -35,12 +144,18 @@ class ConversationProcessor:
         max_chunk_chars: int = 6000,
         max_context_chars: int = 22000,
         litellm_timeout_seconds: int = 120,
+        provider_key_lookup: Callable[[str], str | None] | None = None,
     ) -> None:
         self.console = console
         self.default_model = default_model
         self.max_chunk_chars = max_chunk_chars
         self.max_context_chars = max_context_chars
         self.litellm_timeout_seconds = litellm_timeout_seconds
+        self.provider_key_lookup = provider_key_lookup
+        self._llm_notice_printed = False
+        if litellm is not None:
+            # Prevent LiteLLM from printing repetitive provider-help blocks on handled failures.
+            litellm.suppress_debug_info = True
 
     def load_conversations(
         self, file_path: Path, source_platform: Platform | str | None = None
@@ -86,6 +201,8 @@ class ConversationProcessor:
         *,
         persona_override: str | None = None,
         model: str | None = None,
+        provider: str | None = None,
+        api_keys: dict[str, str] | None = None,
         use_llm: bool = True,
     ) -> PersonaProfile:
         if persona_override:
@@ -99,7 +216,12 @@ class ConversationProcessor:
 
         history_excerpt = self._build_excerpt(conversations, max_chars=12000)
         if use_llm and completion is not None and history_excerpt:
-            result = self._extract_persona_with_llm(history_excerpt, model=model)
+            result = self._extract_persona_with_llm(
+                history_excerpt,
+                model=model,
+                provider=provider,
+                api_keys=api_keys,
+            )
             if result is not None:
                 result.source_conversation_ids = [c.id for c in conversations]
                 return result
@@ -111,6 +233,8 @@ class ConversationProcessor:
         conversation: Conversation,
         *,
         model: str | None = None,
+        provider: str | None = None,
+        api_keys: dict[str, str] | None = None,
         use_llm: bool = True,
         max_chars: int | None = None,
     ) -> str:
@@ -120,11 +244,17 @@ class ConversationProcessor:
             return full_text
 
         if use_llm and completion is not None:
-            summary = self._summarize_with_llm(full_text, model=model, max_chars=max_chars)
+            summary = self._summarize_with_llm(
+                full_text,
+                model=model,
+                provider=provider,
+                api_keys=api_keys,
+                max_chars=max_chars,
+            )
             if summary:
                 return summary
 
-        return self._truncate_history(conversation, max_chars=max_chars)
+        return self._heuristic_condensed_history(conversation, max_chars=max_chars)
 
     def _load_from_zip(self, zip_path: Path, platform: str) -> list[Conversation]:
         with TemporaryDirectory() as temp_dir:
@@ -485,48 +615,51 @@ class ConversationProcessor:
         return conversations
 
     def _extract_persona_with_llm(
-        self, history_excerpt: str, *, model: str | None = None
+        self,
+        history_excerpt: str,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        api_keys: dict[str, str] | None = None,
     ) -> PersonaProfile | None:
-        selected_model = model or self.default_model
-        try:
-            response = completion(
-                model=selected_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Extract persona from conversation history. "
-                            "Return strict JSON with keys: system_prompt (string), "
-                            "facts (array of strings), style_notes (array of strings)."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": history_excerpt,
-                    },
-                ],
-                temperature=0.1,
-                timeout=self.litellm_timeout_seconds,
-            )
-            message_content = response["choices"][0]["message"]["content"]
-            parsed = self._extract_json(message_content)
-            if not parsed:
-                return None
-            return PersonaProfile(
-                name="Extracted Persona",
-                system_prompt=str(parsed.get("system_prompt", "")).strip(),
-                extracted_facts=[
-                    str(value).strip() for value in parsed.get("facts", []) if str(value).strip()
-                ],
-                style_notes=[
-                    str(value).strip()
-                    for value in parsed.get("style_notes", [])
-                    if str(value).strip()
-                ],
-            )
-        except Exception as exc:
-            self.console.print(f"[yellow]LiteLLM persona extraction fallback:[/yellow] {exc}")
+        message_content = self._run_completion_with_fallback(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract persona from conversation history. "
+                        "Return strict JSON with keys: system_prompt (string), "
+                        "facts (array of strings), style_notes (array of strings)."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": history_excerpt,
+                },
+            ],
+            temperature=0.1,
+            model=model,
+            provider=provider,
+            api_keys=api_keys,
+            purpose="persona extraction",
+        )
+        if not message_content:
             return None
+        parsed = self._extract_json(message_content)
+        if not parsed:
+            return None
+        return PersonaProfile(
+            name="Extracted Persona",
+            system_prompt=str(parsed.get("system_prompt", "")).strip(),
+            extracted_facts=[
+                str(value).strip() for value in parsed.get("facts", []) if str(value).strip()
+            ],
+            style_notes=[
+                str(value).strip()
+                for value in parsed.get("style_notes", [])
+                if str(value).strip()
+            ],
+        )
 
     def _extract_persona_heuristic(
         self, conversations: list[Conversation]
@@ -578,51 +711,301 @@ class ConversationProcessor:
         )
 
     def _summarize_with_llm(
-        self, text: str, *, model: str | None = None, max_chars: int
+        self,
+        text: str,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        api_keys: dict[str, str] | None = None,
+        max_chars: int,
     ) -> str | None:
-        selected_model = model or self.default_model
         chunks = self._chunk_text(text, chunk_size=self.max_chunk_chars)
         chunk_summaries: list[str] = []
 
         for chunk in chunks:
-            try:
-                response = completion(
-                    model=selected_model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "Summarize the chat segment preserving user goals, "
-                                "open tasks, constraints, and technical decisions."
-                            ),
-                        },
-                        {"role": "user", "content": chunk},
-                    ],
-                    temperature=0.2,
-                    timeout=self.litellm_timeout_seconds,
-                )
-                chunk_summaries.append(response["choices"][0]["message"]["content"].strip())
-            except Exception as exc:
-                self.console.print(f"[yellow]LiteLLM summarization fallback:[/yellow] {exc}")
+            summary = self._run_completion_with_fallback(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Summarize the chat segment preserving user goals, "
+                            "open tasks, constraints, technical decisions, and preferences."
+                        ),
+                    },
+                    {"role": "user", "content": chunk},
+                ],
+                temperature=0.2,
+                model=model,
+                provider=provider,
+                api_keys=api_keys,
+                purpose="history summarization",
+            )
+            if not summary:
                 return None
+            chunk_summaries.append(summary.strip())
 
         merged = "\n\n".join(chunk_summaries)
         if len(merged) > max_chars:
             return merged[: max_chars - 3] + "..."
         return merged
 
-    def _truncate_history(self, conversation: Conversation, *, max_chars: int) -> str:
-        # Keep the newest messages when context is too long.
-        collected: list[str] = []
-        total = 0
-        for message in reversed(conversation.messages):
-            line = f"{message.role.value.capitalize()}: {message.content}\n"
-            if total + len(line) > max_chars:
-                break
-            collected.append(line)
-            total += len(line)
-        collected.reverse()
-        return "".join(collected).strip()
+    def build_context_map(
+        self,
+        conversations: list[Conversation],
+        *,
+        max_topics: int = 20,
+        max_threads: int = 8,
+        max_items: int = 15,
+    ) -> dict[str, Any]:
+        topic_counter: Counter[str] = Counter()
+        work_area_counter: Counter[str] = Counter()
+        open_tasks: list[str] = []
+        decisions: list[str] = []
+        goals: list[str] = []
+        thread_rankings: list[dict[str, Any]] = []
+        total_messages = 0
+        total_user_messages = 0
+
+        now = datetime.now(timezone.utc)
+        for conversation in conversations:
+            total_messages += len(conversation.messages)
+            task_hits = 0
+            decision_hits = 0
+            goal_hits = 0
+
+            for message in conversation.messages:
+                normalized = self._normalize_line(message.content)
+                if not normalized:
+                    continue
+
+                lowered = normalized.lower()
+                if message.role == MessageRole.USER:
+                    total_user_messages += 1
+                    topic_counter.update(self._extract_keywords(normalized))
+                    work_area_counter.update(self._infer_work_areas(lowered))
+
+                    if self._contains_any(lowered, TASK_MARKERS):
+                        open_tasks.append(normalized)
+                        task_hits += 1
+                    if self._contains_any(lowered, DECISION_MARKERS):
+                        decisions.append(normalized)
+                        decision_hits += 1
+                    if self._contains_any(lowered, GOAL_MARKERS):
+                        goals.append(normalized)
+                        goal_hits += 1
+
+            age_days = max(0, (now - conversation.updated_at).days)
+            recency_score = max(1, 30 - age_days)
+            thread_score = (
+                min(len(conversation.messages), 60)
+                + (task_hits * 4)
+                + (decision_hits * 3)
+                + (goal_hits * 2)
+                + recency_score
+            )
+            thread_rankings.append(
+                {
+                    "id": conversation.id,
+                    "title": conversation.title,
+                    "updated_at": conversation.updated_at.isoformat(),
+                    "message_count": len(conversation.messages),
+                    "score": thread_score,
+                    "focus": self._thread_focus(conversation),
+                }
+            )
+
+        sorted_threads = sorted(
+            thread_rankings,
+            key=lambda item: (
+                item["score"],
+                item["updated_at"],
+                item["message_count"],
+            ),
+            reverse=True,
+        )[:max_threads]
+
+        top_topics = [
+            {"topic": topic, "frequency": freq}
+            for topic, freq in topic_counter.most_common(max_topics)
+            if freq > 0
+        ]
+        work_profile = [
+            {"area": area, "frequency": freq}
+            for area, freq in work_area_counter.most_common()
+            if freq > 0
+        ]
+
+        return {
+            "stats": {
+                "conversation_count": len(conversations),
+                "message_count": total_messages,
+                "user_message_count": total_user_messages,
+            },
+            "top_topics": top_topics,
+            "work_profile": work_profile,
+            "priority_threads": sorted_threads,
+            "open_tasks": self._dedupe_lines(open_tasks, max_items=max_items),
+            "decisions": self._dedupe_lines(decisions, max_items=max_items),
+            "goals": self._dedupe_lines(goals, max_items=max_items),
+        }
+
+    def _heuristic_condensed_history(self, conversation: Conversation, *, max_chars: int) -> str:
+        recent_turns = conversation.messages[-12:]
+        recent_lines = [
+            f"- {message.role.value}: {self._normalize_line(message.content, max_len=220)}"
+            for message in recent_turns
+            if self._normalize_line(message.content, max_len=220)
+        ]
+        open_tasks: list[str] = []
+        decisions: list[str] = []
+        for message in conversation.messages:
+            if message.role != MessageRole.USER:
+                continue
+            normalized = self._normalize_line(message.content)
+            if not normalized:
+                continue
+            lowered = normalized.lower()
+            if self._contains_any(lowered, TASK_MARKERS):
+                open_tasks.append(normalized)
+            if self._contains_any(lowered, DECISION_MARKERS):
+                decisions.append(normalized)
+
+        parts: list[str] = [
+            f"Conversation: {conversation.title}",
+            "",
+            "Active tasks:",
+        ]
+        task_lines = self._dedupe_lines(open_tasks, max_items=8)
+        if task_lines:
+            parts.extend(f"- {line}" for line in task_lines)
+        else:
+            parts.append("- No explicit tasks extracted. Continue from recent turns.")
+
+        parts.append("")
+        parts.append("Key decisions:")
+        decision_lines = self._dedupe_lines(decisions, max_items=6)
+        if decision_lines:
+            parts.extend(f"- {line}" for line in decision_lines)
+        else:
+            parts.append("- No explicit decisions extracted.")
+
+        parts.append("")
+        parts.append("Recent turns:")
+        parts.extend(recent_lines)
+
+        condensed = "\n".join(parts).strip()
+        if len(condensed) > max_chars:
+            return condensed[: max_chars - 3] + "..."
+        return condensed
+
+    def _run_completion_with_fallback(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        temperature: float,
+        model: str | None,
+        provider: str | None,
+        api_keys: dict[str, str] | None,
+        purpose: str,
+    ) -> str | None:
+        if completion is None:
+            return None
+
+        selected_provider = normalize_provider_name(provider, allow_custom=True)
+        models = candidate_models(
+            selected_model=model,
+            selected_provider=selected_provider,
+            default_model=self.default_model,
+        )
+        attempt_count = 0
+        had_runtime_error = False
+        for candidate in models:
+            provider_for_model = resolve_provider_for_model(candidate, selected_provider)
+            api_key = self._resolve_provider_key(provider_for_model, api_keys)
+            if self._provider_requires_key(provider_for_model) and not api_key:
+                continue
+
+            try:
+                with self._provider_env(provider_for_model, api_key):
+                    attempt_count += 1
+                    response = completion(
+                        model=candidate,
+                        messages=messages,
+                        temperature=temperature,
+                        timeout=self.litellm_timeout_seconds,
+                    )
+                content = response["choices"][0]["message"]["content"]
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+            except Exception:
+                had_runtime_error = True
+                continue
+
+        if attempt_count == 0:
+            self._notify_llm_fallback_once(
+                f"LiteLLM {purpose} skipped: no reachable configured provider/model. Using heuristics."
+            )
+            return None
+        if had_runtime_error:
+            self._notify_llm_fallback_once(
+                (
+                    f"LiteLLM {purpose} unavailable (provider/network/rate-limit). "
+                    "Using heuristics."
+                )
+            )
+        return None
+
+    def _resolve_provider_key(
+        self,
+        provider: str | None,
+        api_keys: dict[str, str] | None,
+    ) -> str | None:
+        if not provider:
+            return None
+        if api_keys and api_keys.get(provider):
+            return api_keys[provider]
+        from_env = read_provider_key_from_env(provider)
+        if from_env:
+            return from_env
+        if self.provider_key_lookup:
+            return self.provider_key_lookup(provider)
+        return None
+
+    def _provider_requires_key(self, provider: str | None) -> bool:
+        if not provider:
+            return False
+        spec = PROVIDERS.get(provider)
+        if spec is not None:
+            return spec.requires_api_key
+        return False
+
+    @contextmanager
+    def _provider_env(self, provider: str | None, api_key: str | None) -> Iterator[None]:
+        if not provider or not api_key:
+            yield
+            return
+
+        env_vars = provider_key_env_vars(provider)
+        if not env_vars:
+            yield
+            return
+        original_values = {env_var: os.getenv(env_var) for env_var in env_vars}
+        try:
+            for env_var in env_vars:
+                os.environ[env_var] = api_key
+            yield
+        finally:
+            for env_var, original in original_values.items():
+                if original is None:
+                    os.environ.pop(env_var, None)
+                else:
+                    os.environ[env_var] = original
+
+    def _notify_llm_fallback_once(self, message: str) -> None:
+        if self._llm_notice_printed:
+            return
+        self.console.print(f"[yellow]{message}[/yellow]")
+        self._llm_notice_printed = True
 
     def _build_excerpt(self, conversations: list[Conversation], max_chars: int) -> str:
         combined: list[str] = []
@@ -634,6 +1017,58 @@ class ConversationProcessor:
             combined.append(chunk)
             total += len(chunk)
         return "".join(combined).strip()
+
+    def _normalize_line(self, text: str, *, max_len: int = 280) -> str:
+        normalized = re.sub(r"\s+", " ", str(text)).strip()
+        if len(normalized) > max_len:
+            return normalized[: max_len - 3] + "..."
+        return normalized
+
+    def _contains_any(self, text: str, markers: tuple[str, ...]) -> bool:
+        return any(marker in text for marker in markers)
+
+    def _extract_keywords(self, text: str) -> list[str]:
+        keywords: list[str] = []
+        for token in TOKEN_PATTERN.findall(text.lower()):
+            if token in STOPWORDS:
+                continue
+            if token.isdigit():
+                continue
+            keywords.append(token)
+        return keywords
+
+    def _infer_work_areas(self, lowered_text: str) -> list[str]:
+        areas: list[str] = []
+        for area, markers in WORK_AREA_KEYWORDS.items():
+            if any(marker in lowered_text for marker in markers):
+                areas.append(area)
+        return areas
+
+    def _thread_focus(self, conversation: Conversation) -> str:
+        recent_user = [
+            self._normalize_line(message.content, max_len=160)
+            for message in reversed(conversation.messages)
+            if message.role == MessageRole.USER and self._normalize_line(message.content, max_len=160)
+        ]
+        if not recent_user:
+            return "General conversation context."
+        return " | ".join(reversed(recent_user[:2]))
+
+    def _dedupe_lines(self, lines: list[str], *, max_items: int) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for line in lines:
+            normalized = self._normalize_line(line)
+            if not normalized:
+                continue
+            lowered = normalized.lower()
+            if lowered in seen:
+                continue
+            deduped.append(normalized)
+            seen.add(lowered)
+            if len(deduped) >= max_items:
+                break
+        return deduped
 
     def _normalize_platform(self, platform: Platform | str | None) -> str:
         if platform is None:

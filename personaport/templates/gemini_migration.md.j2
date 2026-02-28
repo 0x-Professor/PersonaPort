@@ -11,5 +11,19 @@
 ## Condensed Conversation History
 {{ condensed_history }}
 
+{% if context_map.goals %}
+## User Goals
+{% for goal in context_map.goals %}
+- {{ goal }}
+{% endfor %}
+{% endif %}
+
+{% if context_map.decisions %}
+## Key Decisions
+{% for decision in context_map.decisions %}
+- {{ decision }}
+{% endfor %}
+{% endif %}
+
 ## Continue Prompt
 {{ continue_instruction }}

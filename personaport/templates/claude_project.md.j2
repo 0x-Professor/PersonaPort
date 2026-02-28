@@ -16,5 +16,26 @@
 ## Condensed History
 {{ condensed_history }}
 
+{% if context_map.work_profile %}
+## Work Profile
+{% for item in context_map.work_profile %}
+- {{ item.area }} ({{ item.frequency }})
+{% endfor %}
+{% endif %}
+
+{% if context_map.open_tasks %}
+## Open Tasks
+{% for task in context_map.open_tasks %}
+- {{ task }}
+{% endfor %}
+{% endif %}
+
+{% if context_map.priority_threads %}
+## Priority Threads
+{% for thread in context_map.priority_threads %}
+- {{ thread.title }} | score={{ thread.score }} | focus={{ thread.focus }}
+{% endfor %}
+{% endif %}
+
 ## Continue
 {{ continue_instruction }}

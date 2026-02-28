@@ -7,6 +7,7 @@ from typing import Any
 
 import typer
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.prompt import Confirm
 from rich.table import Table
 
 from personaport import __version__
@@ -14,6 +15,7 @@ from personaport.browser.manager import BrowserManager
 from personaport.browser.platforms import get_platform_adapter
 from personaport.config import AppConfig, ConfigManager
 from personaport.db import ConversationCache
+from personaport.llm import PROVIDERS, normalize_provider_name, provider_key_env_vars
 from personaport.models import Conversation, Platform, ProcessedHistory
 from personaport.processor import ConversationProcessor
 from personaport.transfer import TransferService
@@ -35,6 +37,8 @@ app = typer.Typer(
     help=APP_HELP,
     rich_markup_mode="rich",
 )
+provider_app = typer.Typer(help="Manage LLM provider API keys and defaults.")
+app.add_typer(provider_app, name="provider")
 
 
 def _get_state(ctx: typer.Context) -> dict[str, Any]:
@@ -65,6 +69,44 @@ def _collect_attachment_files(output_files: dict[str, str]) -> list[Path]:
     if "knowledge_text" in output_files:
         return [Path(output_files["knowledge_text"])]
     return []
+
+
+def _resolve_llm_runtime(
+    *,
+    config_manager: ConfigManager,
+    provider: str | None,
+    api_key: str | None,
+    save_api_key: bool,
+) -> tuple[str | None, dict[str, str]]:
+    normalized_provider = normalize_provider_name(provider, allow_custom=True)
+    if provider and normalized_provider is None:
+        valid = ", ".join(sorted(PROVIDERS.keys()))
+        raise typer.BadParameter(
+            f"Unsupported --llm-provider `{provider}`. Choose one of: {valid}, "
+            "or pass a custom provider slug (lowercase letters, digits, _ or -)."
+        )
+    if api_key and not normalized_provider:
+        raise typer.BadParameter("--api-key requires --llm-provider.")
+
+    keys: dict[str, str] = {}
+    if normalized_provider and api_key:
+        keys[normalized_provider] = api_key.strip()
+        if save_api_key:
+            stored = config_manager.set_provider_key(normalized_provider, api_key.strip())
+            if not stored:
+                raise typer.BadParameter(
+                    "Could not store API key in keyring. "
+                    "Run without --save-api-key or configure your OS keyring."
+                )
+    return normalized_provider, keys
+
+
+def _confirm_target_injection(console: Any, target_platform: Platform) -> bool:
+    return Confirm.ask(
+        f"Inject processed payload into {target_platform.value} now?",
+        default=False,
+        console=console,
+    )
 
 
 def _manual_export_markers(platform: Platform) -> set[str]:
@@ -155,6 +197,7 @@ def main(
         max_chunk_chars=app_config.max_chunk_chars,
         max_context_chars=app_config.max_context_chars,
         litellm_timeout_seconds=app_config.litellm_timeout_seconds,
+        provider_key_lookup=config_manager.get_provider_key,
     )
     transfer = TransferService(console=console, processed_dir=app_config.processed_dir)
 
@@ -172,6 +215,114 @@ def main(
 def version() -> None:
     """Print PersonaPort version."""
     typer.echo(f"personaport {__version__}")
+
+
+@provider_app.command("list")
+def provider_list(
+    ctx: typer.Context,
+    show_key_status: bool = typer.Option(
+        True,
+        "--show-key-status/--hide-key-status",
+        help="Show whether API key is configured for each provider.",
+    ),
+) -> None:
+    """List configured LLM providers and default models."""
+    state = _get_state(ctx)
+    console = state["console"]
+    config_manager: ConfigManager = state["config_manager"]
+
+    table = Table(title="LLM Providers")
+    table.add_column("Provider", style="cyan")
+    table.add_column("Default Model", style="green")
+    table.add_column("API Key Env", style="magenta")
+    if show_key_status:
+        table.add_column("Configured", style="yellow")
+    table.add_column("Notes", style="white")
+
+    for name in sorted(PROVIDERS.keys()):
+        spec = PROVIDERS[name]
+        env_vars = ", ".join(provider_key_env_vars(name)) if spec.key_env_vars else "-"
+        key_status = "-"
+        if show_key_status and spec.requires_api_key:
+            configured = bool(config_manager.get_provider_key(name))
+            key_status = "yes" if configured else "no"
+        elif show_key_status:
+            key_status = "n/a"
+        row: list[str] = [
+            name,
+            spec.default_model,
+            env_vars,
+        ]
+        if show_key_status:
+            row.append(key_status)
+        row.append(spec.notes or "-")
+        table.add_row(*row)
+    console.print(table)
+
+
+@provider_app.command("set-key")
+def provider_set_key(
+    ctx: typer.Context,
+    provider: str = typer.Option(..., "--provider", help="Provider name, e.g. groq."),
+    api_key: str | None = typer.Option(
+        None,
+        "--api-key",
+        help="API key value. If omitted, you will be prompted securely.",
+    ),
+) -> None:
+    """Store provider API key in OS keyring."""
+    state = _get_state(ctx)
+    console = state["console"]
+    config_manager: ConfigManager = state["config_manager"]
+    normalized_provider = normalize_provider_name(provider, allow_custom=True)
+    if normalized_provider is None:
+        valid = ", ".join(sorted(PROVIDERS.keys()))
+        raise typer.BadParameter(
+            f"Unknown provider `{provider}`. Valid values: {valid}, or custom provider slug."
+        )
+
+    spec = PROVIDERS.get(normalized_provider)
+    if spec is not None and not spec.requires_api_key:
+        raise typer.BadParameter(f"{normalized_provider} does not require an API key.")
+
+    secret = api_key or typer.prompt(
+        f"Enter API key for {normalized_provider}",
+        hide_input=True,
+        confirmation_prompt=True,
+    )
+    if not secret.strip():
+        raise typer.BadParameter("API key cannot be empty.")
+    stored = config_manager.set_provider_key(normalized_provider, secret.strip())
+    if not stored:
+        raise typer.BadParameter(
+            "Failed to store API key in keyring. Check keyring setup on this machine."
+        )
+    console.print(f"[green]Stored API key for provider:[/green] {normalized_provider}")
+
+
+@provider_app.command("delete-key")
+def provider_delete_key(
+    ctx: typer.Context,
+    provider: str = typer.Option(..., "--provider", help="Provider name, e.g. groq."),
+) -> None:
+    """Delete provider API key from OS keyring."""
+    state = _get_state(ctx)
+    console = state["console"]
+    config_manager: ConfigManager = state["config_manager"]
+    normalized_provider = normalize_provider_name(provider, allow_custom=True)
+    if normalized_provider is None:
+        valid = ", ".join(sorted(PROVIDERS.keys()))
+        raise typer.BadParameter(
+            f"Unknown provider `{provider}`. Valid values: {valid}, or custom provider slug."
+        )
+
+    deleted = config_manager.delete_provider_key(normalized_provider)
+    if deleted:
+        console.print(f"[green]Deleted API key for provider:[/green] {normalized_provider}")
+    else:
+        console.print(
+            f"[yellow]No stored API key found for provider:[/yellow] {normalized_provider}"
+        )
 
 
 @app.command()
@@ -225,6 +376,21 @@ def export(
         "--no-scrape",
         help="Disable scraping fallback even in unsafe mode.",
     ),
+    llm_provider: str | None = typer.Option(
+        None,
+        "--llm-provider",
+        help="Provider used for persona extraction/summarization (ollama, groq, openrouter, ...).",
+    ),
+    api_key: str | None = typer.Option(
+        None,
+        "--api-key",
+        help="Temporary API key for --llm-provider (not persisted unless --save-api-key).",
+    ),
+    save_api_key: bool = typer.Option(
+        False,
+        "--save-api-key",
+        help="Save --api-key in OS keyring for future runs.",
+    ),
     model: str | None = typer.Option(None, "--model", help="Override LiteLLM model."),
     export_file: Path | None = typer.Option(
         None,
@@ -259,6 +425,12 @@ def export(
     processor: ConversationProcessor = state["processor"]
     transfer: TransferService = state["transfer"]
     command_started_at = datetime.now(timezone.utc)
+    selected_provider, runtime_api_keys = _resolve_llm_runtime(
+        config_manager=config_manager,
+        provider=llm_provider,
+        api_key=api_key,
+        save_api_key=save_api_key,
+    )
 
     if not safe_mode and not no_scrape:
         if not confirm_unsafe_mode(console):
@@ -349,15 +521,29 @@ def export(
         else _latest_conversation(conversations)
     )
 
-    persona = processor.extract_persona(conversations, model=model, use_llm=True)
+    persona = processor.extract_persona(
+        conversations,
+        model=model,
+        provider=selected_provider,
+        api_keys=runtime_api_keys,
+        use_llm=True,
+    )
     cache.save_persona(persona)
 
     target = to_platform or Platform.GENERIC
-    condensed = processor.condense_history(selected_conversation, model=model, use_llm=True)
+    condensed = processor.condense_history(
+        selected_conversation,
+        model=model,
+        provider=selected_provider,
+        api_keys=runtime_api_keys,
+        use_llm=True,
+    )
+    context_map = processor.build_context_map(conversations)
     artifact = transfer.build_artifact(
         selected_conversation,
         persona,
         condensed_history=condensed,
+        context_map=context_map,
         target_platform=target,
     )
     output_files = transfer.write_artifact(
@@ -376,6 +562,9 @@ def export(
     cache.save_processed_history(processed)
 
     if to_platform and auto_inject:
+        if not _confirm_target_injection(console, to_platform):
+            console.print("[yellow]Injection cancelled by user. Output files were generated.[/yellow]")
+            raise typer.Exit(code=0)
         target_state_path = config_manager.session_state_path(app_config, to_platform)
         if not target_state_path.exists():
             console.print(
@@ -406,6 +595,21 @@ def process(
         help="Combine all conversations from the input export into one migration bundle.",
     ),
     persona: str | None = typer.Option(None, "--persona", help="Manual persona override."),
+    llm_provider: str | None = typer.Option(
+        None,
+        "--llm-provider",
+        help="Provider used for persona extraction/summarization (ollama, groq, openrouter, ...).",
+    ),
+    api_key: str | None = typer.Option(
+        None,
+        "--api-key",
+        help="Temporary API key for --llm-provider (not persisted unless --save-api-key).",
+    ),
+    save_api_key: bool = typer.Option(
+        False,
+        "--save-api-key",
+        help="Save --api-key in OS keyring for future runs.",
+    ),
     model: str | None = typer.Option(None, "--model"),
     summarize: bool = typer.Option(
         True, "--summarize/--no-summarize", help="Condense history for context windows."
@@ -421,6 +625,14 @@ def process(
     cache: ConversationCache = state["cache"]
     processor: ConversationProcessor = state["processor"]
     transfer: TransferService = state["transfer"]
+    config_manager: ConfigManager = state["config_manager"]
+
+    selected_provider, runtime_api_keys = _resolve_llm_runtime(
+        config_manager=config_manager,
+        provider=llm_provider,
+        api_key=api_key,
+        save_api_key=save_api_key,
+    )
 
     conversations = processor.load_conversations(file, source_platform=from_platform)
     if not conversations:
@@ -444,19 +656,29 @@ def process(
         conversations,
         persona_override=persona,
         model=model,
+        provider=selected_provider,
+        api_keys=runtime_api_keys,
         use_llm=True,
     )
     cache.save_persona(persona_profile)
 
     condensed = (
-        processor.condense_history(selected, model=model, use_llm=True)
+        processor.condense_history(
+            selected,
+            model=model,
+            provider=selected_provider,
+            api_keys=runtime_api_keys,
+            use_llm=True,
+        )
         if summarize
         else selected.to_history_text()
     )
+    context_map = processor.build_context_map(conversations)
     artifact = transfer.build_artifact(
         selected,
         persona_profile,
         condensed_history=condensed,
+        context_map=context_map,
         target_platform=target,
     )
     output_files = transfer.write_artifact(
@@ -495,6 +717,21 @@ def migrate(
         help="Combine all resolved source conversations into one migration bundle.",
     ),
     persona: str | None = typer.Option(None, "--persona"),
+    llm_provider: str | None = typer.Option(
+        None,
+        "--llm-provider",
+        help="Provider used for persona extraction/summarization (ollama, groq, openrouter, ...).",
+    ),
+    api_key: str | None = typer.Option(
+        None,
+        "--api-key",
+        help="Temporary API key for --llm-provider (not persisted unless --save-api-key).",
+    ),
+    save_api_key: bool = typer.Option(
+        False,
+        "--save-api-key",
+        help="Save --api-key in OS keyring for future runs.",
+    ),
     model: str | None = typer.Option(None, "--model"),
     auto_inject: bool = typer.Option(
         True,
@@ -511,6 +748,12 @@ def migrate(
     cache: ConversationCache = state["cache"]
     processor: ConversationProcessor = state["processor"]
     transfer: TransferService = state["transfer"]
+    selected_provider, runtime_api_keys = _resolve_llm_runtime(
+        config_manager=config_manager,
+        provider=llm_provider,
+        api_key=api_key,
+        save_api_key=save_api_key,
+    )
 
     selected_conversation: Conversation | None = None
     source_conversations: list[Conversation] = []
@@ -568,15 +811,25 @@ def migrate(
         source_conversations,
         persona_override=persona,
         model=model,
+        provider=selected_provider,
+        api_keys=runtime_api_keys,
         use_llm=True,
     )
     cache.save_persona(persona_profile)
 
-    condensed = processor.condense_history(selected_conversation, model=model, use_llm=True)
+    condensed = processor.condense_history(
+        selected_conversation,
+        model=model,
+        provider=selected_provider,
+        api_keys=runtime_api_keys,
+        use_llm=True,
+    )
+    context_map = processor.build_context_map(source_conversations)
     artifact = transfer.build_artifact(
         selected_conversation,
         persona_profile,
         condensed_history=condensed,
+        context_map=context_map,
         target_platform=target,
     )
     output_files = transfer.write_artifact(
@@ -595,6 +848,9 @@ def migrate(
     cache.save_processed_history(processed)
 
     if auto_inject:
+        if not _confirm_target_injection(console, target):
+            console.print("[yellow]Injection cancelled by user. Output files were generated.[/yellow]")
+            raise typer.Exit(code=0)
         target_state_path = config_manager.session_state_path(app_config, target)
         if not target_state_path.exists():
             raise typer.BadParameter(
