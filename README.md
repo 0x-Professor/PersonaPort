@@ -231,13 +231,27 @@ Publishing is configured in `.github/workflows/publish.yml`:
 
 - Trigger: GitHub Release published.
 - Build: `python -m build` and `python -m twine check dist/*`.
-- Publish: `pypa/gh-action-pypi-publish` with PyPI Trusted Publishing.
+- Publish: `pypa/gh-action-pypi-publish` with either:
+  - `PYPI_API_TOKEN` repository secret (token mode), or
+  - PyPI Trusted Publishing (OIDC mode, when token secret is not set).
 
 Setup steps:
 
 1. Create the `personaport` project on PyPI.
-2. Configure PyPI Trusted Publisher for this repository + workflow.
+2. Choose one publishing mode:
+   - Token mode: add repository secret `PYPI_API_TOKEN` (recommended for quick setup).
+   - Trusted mode: configure PyPI Trusted Publisher for:
+     - Owner: `0x-Professor`
+     - Repository: `PersonaPort`
+     - Workflow: `.github/workflows/publish.yml`
+     - Environment: not required
 3. Publish a GitHub release tag (for example `v0.1.1`).
+
+Trusted publishing troubleshooting:
+
+- If you see `invalid-publisher` in publish logs, PyPI trusted publisher claims do not match.
+- Verify the repository/workflow/ref in PyPI exactly match the GitHub run claims.
+- Reference: https://docs.pypi.org/trusted-publishers/troubleshooting/
 
 ## Development Status
 

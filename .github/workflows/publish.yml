@@ -44,9 +44,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    environment:
-      name: pypi
-      url: https://pypi.org/project/personaport/
     permissions:
       id-token: write
       contents: read
@@ -57,5 +54,13 @@ jobs:
           name: dist
           path: dist
 
-      - name: Publish package to PyPI
+      - name: Publish package to PyPI (token)
+        if: ${{ secrets.PYPI_API_TOKEN != '' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Publish package to PyPI (trusted publishing)
+        if: ${{ secrets.PYPI_API_TOKEN == '' }}
         uses: pypa/gh-action-pypi-publish@release/v1
