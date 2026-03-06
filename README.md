@@ -256,6 +256,23 @@ make check
 
 The current test suite is primarily unit-level (parsers, processor logic, DB/config helpers, transfer chunking).
 
+## Internal Symphony Runner
+
+PersonaPort now includes an internal-only GitHub-native Symphony runner under `tools/symphony/`.
+
+- Repo contract: `WORKFLOW.md`
+- Agent knowledge docs: `docs/agents/repo-map.md`, `docs/agents/validation.md`, `docs/agents/safety.md`
+- Entry point: `python -m tools.symphony [WORKFLOW.md]`
+
+One-shot dry scheduler pass:
+
+```bash
+python -m tools.symphony --once
+```
+
+This runner is for repository maintenance workflows only. It is not part of the published `personaport` package.
+It can open and merge low-risk PRs only after maintainer review, passing local validation, and passing GitHub checks. High-risk browser/auth/session/provider-key changes still stop for human review.
+
 ## Development Dependencies
 
 `pyproject.toml` is the source of truth for dependencies.
