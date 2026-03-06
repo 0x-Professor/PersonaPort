@@ -50,3 +50,21 @@ def test_ensure_pr_passes_title_as_a_single_argument(tmp_path: Path) -> None:
     assert create_call[create_call.index("--title") + 1] == 'Fix "quotes" && echo nope'
     assert create_call[create_call.index("--base") + 1] == "master"
     assert "--draft" in create_call
+
+
+def test_fail_issue_delegates_to_handoff_issue(tmp_path: Path) -> None:
+    tracker = GitHubTracker(
+        config=TrackerConfig(repo="owner/repo", labels=LabelContract()),
+        repo_root=tmp_path,
+        runner=FakeRunner(),
+    )
+    calls: list[tuple[int, str]] = []
+
+    def _fake_handoff(number: int, *, proof_markdown: str) -> None:
+        calls.append((number, proof_markdown))
+
+    tracker.handoff_issue = _fake_handoff  # type: ignore[method-assign]
+
+    tracker.fail_issue(7, proof_markdown="body")
+
+    assert calls == [(7, "body")]

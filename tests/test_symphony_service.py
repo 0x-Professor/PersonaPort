@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -249,6 +250,32 @@ def test_issue_executor_blocks_merge_for_high_risk_changes(tmp_path: Path) -> No
     assert tracker.waited == []
     assert tracker.merged == []
     assert pr.number == 1
+
+
+def test_maintainer_review_respects_directory_boundaries(tmp_path: Path) -> None:
+    workflow = load_workflow(_automerge_workflow_file(tmp_path))
+    workflow = replace(
+        workflow,
+        pull_request=replace(
+            workflow.pull_request,
+            allowed_paths=("src",),
+            high_risk_paths=("secret",),
+        ),
+    )
+
+    review = _build_maintainer_review(
+        changed_paths=("srcfoo/module.py",),
+        validations=[],
+        workflow=workflow,
+        pr=type(
+            "PR",
+            (),
+            {"number": 1, "is_draft": False, "status_check_rollup": (), "url": "https://example.test/pr/1"},
+        )(),
+    )
+
+    assert review.approved_for_merge is False
+    assert any("srcfoo/module.py" in blocker for blocker in review.blockers)
 
 
 class _EnsurePrTrackerStub:

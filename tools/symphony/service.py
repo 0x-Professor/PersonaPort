@@ -149,10 +149,15 @@ def _format_maintainer_review(review: MaintainerReview) -> str:
 
 def _path_matches_prefix(path: str, prefixes: tuple[str, ...]) -> bool:
     normalized = path.replace("\\", "/")
-    return any(
-        normalized == prefix.rstrip("/") or normalized.startswith(prefix)
-        for prefix in prefixes
-    )
+    for prefix in prefixes:
+        normalized_prefix = prefix.replace("\\", "/").rstrip("/")
+        if not normalized_prefix:
+            continue
+        if normalized == normalized_prefix:
+            return True
+        if normalized.startswith(f"{normalized_prefix}/"):
+            return True
+    return False
 
 
 def _build_maintainer_review(

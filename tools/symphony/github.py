@@ -96,13 +96,7 @@ class GitHubTracker:
         )
 
     def fail_issue(self, number: int, *, proof_markdown: str) -> None:
-        labels = self.config.labels
-        self.comment_on_issue(number, proof_markdown)
-        self._edit_issue_labels(
-            number,
-            add=(labels.handoff,),
-            remove=(labels.running, labels.ready, labels.rework),
-        )
+        self.handoff_issue(number, proof_markdown=proof_markdown)
 
     def release_issue(self, number: int) -> None:
         self._edit_issue_labels(number, add=(), remove=(self.config.labels.running,))
