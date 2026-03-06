@@ -33,6 +33,27 @@ ruff check .
 pytest
 ```
 
+## Internal Symphony Workflow
+
+The repo now carries an internal automation harness for agent-driven issue execution.
+
+- Workflow contract: `WORKFLOW.md`
+- Knowledge docs: `docs/agents/repo-map.md`, `docs/agents/validation.md`, `docs/agents/safety.md`
+- Runner entry point: `python -m tools.symphony [WORKFLOW.md]`
+
+GitHub label contract for automation:
+
+- `agent-ready`: issue is eligible for dispatch
+- `agent-running`: issue is currently claimed by the runner
+- `human-review`: proof-of-work handoff is ready for a human
+- `agent-rework`: human requests another automated pass
+- `blocked`: issue is ineligible for automated execution
+
+Merge policy for the internal runner:
+
+- low-risk PRs may be auto-merged after maintainer review, local validation, and successful GitHub checks
+- high-risk browser/auth/session/provider-key changes must stop at `human-review`
+
 ## Pull Requests
 
 1. Create a focused branch per change.

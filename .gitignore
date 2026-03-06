@@ -32,6 +32,7 @@ Thumbs.db
 
 # PersonaPort local runtime data
 .personaport/
+.symphony/
 personaport.db
 *.log
 exports/
