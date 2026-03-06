@@ -102,12 +102,16 @@ def load_workflow(path: Path | str) -> WorkflowConfig:
     )
 
     workspace_map = dict(config_map.get("workspace") or {})
+    workspace_root_value = workspace_map.get("root")
     workspace_root = _expand_path(
-        str(workspace_map.get("root", ".symphony/workspaces")),
+        ".symphony/workspaces" if workspace_root_value is None else str(workspace_root_value),
         base_dir=workflow_path.parent,
     )
+    logs_root_value = (
+        workspace_map["logs_root"] if "logs_root" in workspace_map else ".symphony/logs"
+    )
     logs_root = _expand_path(
-        str(workspace_map.get("logs_root", ".symphony/logs")),
+        None if logs_root_value is None else str(logs_root_value),
         base_dir=workflow_path.parent,
     )
     workspace = WorkspaceConfig(

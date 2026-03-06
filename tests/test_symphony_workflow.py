@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import time
+import os
 from pathlib import Path
 
 import pytest
@@ -88,7 +88,6 @@ first
         encoding="utf-8",
     )
     manager = WorkflowManager(workflow_path)
-    time.sleep(0.02)
     workflow_path.write_text(
         """
 ---
@@ -101,6 +100,8 @@ second
 """.strip(),
         encoding="utf-8",
     )
+    next_mtime = manager._mtime_ns + 1_000_000
+    os.utime(workflow_path, ns=(next_mtime, next_mtime))
 
     updated = manager.reload_if_changed()
 
@@ -136,3 +137,25 @@ Issue {{ issue.number }}
     assert workflow.pull_request.checks_timeout_seconds == 600
     assert workflow.pull_request.checks_poll_seconds == 5
     assert workflow.pull_request.high_risk_paths == ("secret/",)
+
+
+def test_load_workflow_handles_null_workspace_paths(tmp_path: Path) -> None:
+    workflow_path = tmp_path / "WORKFLOW.md"
+    workflow_path.write_text(
+        """
+---
+tracker:
+  kind: github
+workspace:
+  root:
+  logs_root:
+---
+Issue {{ issue.number }}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    workflow = load_workflow(workflow_path)
+
+    assert workflow.workspace.root == (tmp_path / ".symphony" / "workspaces").resolve()
+    assert workflow.workspace.logs_root is None

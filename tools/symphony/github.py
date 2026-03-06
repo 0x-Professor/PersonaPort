@@ -29,14 +29,26 @@ class GitHubTracker:
         self.runner = runner or ShellCommandRunner()
 
     def validate_auth(self) -> None:
-        self.runner.run("gh auth status", cwd=self.repo_root)
+        self.runner.run(["gh", "auth", "status"], cwd=self.repo_root)
+
+    def _repo_args(self) -> list[str]:
+        if not self.config.repo:
+            return []
+        return ["-R", self.config.repo]
 
     def list_open_issues(self) -> list[GitHubIssue]:
-        repo_flag = f"-R {self.config.repo}" if self.config.repo else ""
-        command = (
-            f"gh issue list {repo_flag} --limit 200 --state open "
-            '--json number,title,body,url,labels,createdAt,updatedAt,state'
-        ).strip()
+        command = [
+            "gh",
+            "issue",
+            "list",
+            *self._repo_args(),
+            "--limit",
+            "200",
+            "--state",
+            "open",
+            "--json",
+            "number,title,body,url,labels,createdAt,updatedAt,state",
+        ]
         payload = self.runner.run_json(command, cwd=self.repo_root)
         assert isinstance(payload, list)
         issues = [self._parse_issue(item) for item in payload]
@@ -53,11 +65,15 @@ class GitHubTracker:
         return [issue for issue in self.list_open_issues() if running_label in issue.labels]
 
     def get_issue(self, number: int) -> GitHubIssue:
-        repo_flag = f"-R {self.config.repo}" if self.config.repo else ""
-        command = (
-            f"gh issue view {number} {repo_flag} "
-            '--json number,title,body,url,labels,createdAt,updatedAt,state'
-        ).strip()
+        command = [
+            "gh",
+            "issue",
+            "view",
+            str(number),
+            *self._repo_args(),
+            "--json",
+            "number,title,body,url,labels,createdAt,updatedAt,state",
+        ]
         payload = self.runner.run_json(command, cwd=self.repo_root)
         assert isinstance(payload, dict)
         return self._parse_issue(payload)
@@ -113,13 +129,22 @@ class GitHubTracker:
         existing = self.find_pr_by_branch(branch_name, cwd=cwd)
         if existing is not None:
             return existing
-        repo_flag = f"-R {self.config.repo}" if self.config.repo else ""
-        draft_flag = "--draft" if draft else ""
-        safe_title = title.replace('"', "'")
-        command = (
-            f'gh pr create {repo_flag} --base "{base_branch}" --head "{branch_name}" '
-            f'--title "{safe_title}" {draft_flag} --body-file -'
-        ).strip()
+        command = [
+            "gh",
+            "pr",
+            "create",
+            *self._repo_args(),
+            "--base",
+            base_branch,
+            "--head",
+            branch_name,
+            "--title",
+            title,
+            "--body-file",
+            "-",
+        ]
+        if draft:
+            command.append("--draft")
         result = self.runner.run(command, cwd=cwd, input_text=body)
         pr_url = result.stdout.strip().splitlines()[-1]
         return self.find_pr_by_branch(branch_name, cwd=cwd) or PullRequestInfo(
@@ -129,11 +154,18 @@ class GitHubTracker:
         )
 
     def find_pr_by_branch(self, branch_name: str, *, cwd: Path) -> PullRequestInfo | None:
-        repo_flag = f"-R {self.config.repo}" if self.config.repo else ""
-        command = (
-            f'gh pr list {repo_flag} --head "{branch_name}" --state all '
-            "--json number,url,isDraft,state,statusCheckRollup,mergeStateStatus,reviewDecision"
-        ).strip()
+        command = [
+            "gh",
+            "pr",
+            "list",
+            *self._repo_args(),
+            "--head",
+            branch_name,
+            "--state",
+            "all",
+            "--json",
+            "number,url,isDraft,state,statusCheckRollup,mergeStateStatus,reviewDecision",
+        ]
         payload = self.runner.run_json(command, cwd=cwd)
         assert isinstance(payload, list)
         if not payload:
@@ -141,11 +173,15 @@ class GitHubTracker:
         return self._parse_pr(payload[0])
 
     def get_pr(self, number: int, *, cwd: Path) -> PullRequestInfo:
-        repo_flag = f"-R {self.config.repo}" if self.config.repo else ""
-        command = (
-            f"gh pr view {number} {repo_flag} "
-            "--json number,url,isDraft,state,statusCheckRollup,mergeStateStatus,reviewDecision"
-        ).strip()
+        command = [
+            "gh",
+            "pr",
+            "view",
+            str(number),
+            *self._repo_args(),
+            "--json",
+            "number,url,isDraft,state,statusCheckRollup,mergeStateStatus,reviewDecision",
+        ]
         payload = self.runner.run_json(command, cwd=cwd)
         assert isinstance(payload, dict)
         return self._parse_pr(payload)
@@ -176,19 +212,26 @@ class GitHubTracker:
         merge_method: str,
         delete_branch: bool,
     ) -> None:
-        repo_flag = f"-R {self.config.repo}" if self.config.repo else ""
-        delete_flag = "--delete-branch" if delete_branch else ""
         method_flag = {
             "merge": "--merge",
             "squash": "--squash",
             "rebase": "--rebase",
         }[merge_method]
-        command = f"gh pr merge {number} {repo_flag} {method_flag} {delete_flag}".strip()
+        command = ["gh", "pr", "merge", str(number), *self._repo_args(), method_flag]
+        if delete_branch:
+            command.append("--delete-branch")
         self.runner.run(command, cwd=cwd)
 
     def comment_on_issue(self, number: int, body: str) -> None:
-        repo_flag = f"-R {self.config.repo}" if self.config.repo else ""
-        command = f"gh issue comment {number} {repo_flag} --body-file -".strip()
+        command = [
+            "gh",
+            "issue",
+            "comment",
+            str(number),
+            *self._repo_args(),
+            "--body-file",
+            "-",
+        ]
         self.runner.run(command, cwd=self.repo_root, input_text=body)
 
     def is_issue_eligible(self, issue: GitHubIssue) -> bool:
@@ -217,13 +260,12 @@ class GitHubTracker:
         add: tuple[str, ...],
         remove: tuple[str, ...],
     ) -> None:
-        repo_flag = f"-R {self.config.repo}" if self.config.repo else ""
-        parts = [f"gh issue edit {number} {repo_flag}".strip()]
+        command = ["gh", "issue", "edit", str(number), *self._repo_args()]
         if add:
-            parts.append(f'--add-label "{",".join(add)}"')
+            command.extend(["--add-label", ",".join(add)])
         if remove:
-            parts.append(f'--remove-label "{",".join(remove)}"')
-        self.runner.run(" ".join(parts), cwd=self.repo_root)
+            command.extend(["--remove-label", ",".join(remove)])
+        self.runner.run(command, cwd=self.repo_root)
 
     def _parse_issue(self, payload: dict[str, Any]) -> GitHubIssue:
         labels_raw = payload.get("labels") or []

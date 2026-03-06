@@ -73,3 +73,18 @@ def test_codex_client_uses_workspace_cwd(monkeypatch, tmp_path: Path) -> None:
     assert result.thread_id == "thread-1"
     assert result.turn_id == "turn-1"
     assert result.assistant_text == "done"
+
+
+def test_wait_for_response_checks_buffer_after_timeout(monkeypatch) -> None:
+    client = CodexAppServerClient(CodexConfig(command="codex app-server", read_timeout_seconds=1))
+    ticks = iter([0.0, 0.5, 1.2])
+
+    monkeypatch.setattr("tools.symphony.codex_app_server.time.monotonic", lambda: next(ticks))
+
+    def _fake_pump(*, cancel_event=None, timeout: float) -> None:
+        del cancel_event, timeout
+        client._responses[9] = {"result": {"ok": True}}  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(client, "_pump_messages", _fake_pump)
+
+    assert client._wait_for_response(9, cancel_event=None) == {"ok": True}

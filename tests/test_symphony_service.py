@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tools.symphony.models import ExecutionOutcome, GitHubIssue
+from tools.symphony.models import (
+    CommandResult,
+    ExecutionOutcome,
+    GitHubIssue,
+    PullRequestInfo,
+    WorktreeInfo,
+)
 from tools.symphony.service import IssueExecutor, SymphonyService, _build_maintainer_review
 from tools.symphony.workflow import load_workflow
 from tools.symphony.worktree import GitWorktreeManager
@@ -242,3 +249,94 @@ def test_issue_executor_blocks_merge_for_high_risk_changes(tmp_path: Path) -> No
     assert tracker.waited == []
     assert tracker.merged == []
     assert pr.number == 1
+
+
+class _EnsurePrTrackerStub:
+    def __init__(self) -> None:
+        self.ensure_pr_calls: list[dict[str, object]] = []
+
+    def ensure_pr(
+        self,
+        *,
+        branch_name: str,
+        base_branch: str,
+        title: str,
+        body: str,
+        draft: bool,
+        cwd: Path,
+    ) -> PullRequestInfo:
+        self.ensure_pr_calls.append(
+            {
+                "branch_name": branch_name,
+                "base_branch": base_branch,
+                "title": title,
+                "body": body,
+                "draft": draft,
+                "cwd": cwd,
+            }
+        )
+        return PullRequestInfo(number=9, url="https://example.test/pr/9", is_draft=draft)
+
+
+def test_commit_push_and_open_pr_uses_argument_lists_for_issue_title(tmp_path: Path) -> None:
+    workflow = load_workflow(_workflow_file(tmp_path))
+    tracker = _EnsurePrTrackerStub()
+    runner = FakeRunner()
+    runner.add_command_result("git commit", stdout="[branch] safe commit\n")
+    executor = IssueExecutor(
+        workflow=workflow,
+        worktrees=GitWorktreeManager(
+            repo_root=tmp_path,
+            workspace_root=tmp_path / "workspaces",
+            base_branch="develop",
+            runner=FakeRunner(),
+        ),
+        tracker=tracker,  # type: ignore[arg-type]
+        runner=runner,
+    )
+    worktree_path = tmp_path / "workspace"
+    worktree_path.mkdir()
+    issue = GitHubIssue(
+        number=7,
+        title='Fix "quotes" && powershell -c calc',
+        body="",
+        state="OPEN",
+        url="https://example.test/issues/7",
+        labels=frozenset({"agent-running"}),
+    )
+    changed_files = CommandResult(
+        command="git status --short",
+        returncode=0,
+        stdout=" M tools/symphony/service.py\n",
+        stderr="",
+        duration_seconds=0.01,
+    )
+
+    pr = executor._commit_push_and_open_pr(
+        issue=issue,
+        attempt=1,
+        worktree=WorktreeInfo(
+            issue_number=7,
+            branch_name="agent/7-fix-quotes",
+            path=worktree_path,
+            created_now=False,
+        ),
+        changed_files=changed_files,
+        validations=[],
+        cancel_event=threading.Event(),
+    )
+
+    assert pr is not None
+    commit_call = next(
+        raw_call
+        for raw_call, _ in runner.raw_calls
+        if isinstance(raw_call, list) and raw_call[:3] == ["git", "commit", "-m"]
+    )
+    assert commit_call[3] == 'agent: resolve #7 Fix "quotes" && powershell -c calc'
+    push_call = next(
+        raw_call
+        for raw_call, _ in runner.raw_calls
+        if isinstance(raw_call, list) and raw_call[:3] == ["git", "push", "-u"]
+    )
+    assert push_call[-1] == "agent/7-fix-quotes"
+    assert tracker.ensure_pr_calls[0]["base_branch"] == "develop"

@@ -54,9 +54,9 @@ class GitWorktreeManager:
             )
         base_ref = self._resolve_base_ref()
         if self._branch_exists(branch_name):
-            command = f'git worktree add "{path}" "{branch_name}"'
+            command = ["git", "worktree", "add", str(path), branch_name]
         else:
-            command = f'git worktree add -b "{branch_name}" "{path}" "{base_ref}"'
+            command = ["git", "worktree", "add", "-b", branch_name, str(path), base_ref]
         self.runner.run(command, cwd=self.repo_root)
         return WorktreeInfo(
             issue_number=issue.number,
@@ -69,7 +69,10 @@ class GitWorktreeManager:
         for workspace in self.list_issue_workspaces():
             if workspace.issue_number != issue_number:
                 continue
-            self.runner.run(f'git worktree remove --force "{workspace.path}"', cwd=self.repo_root)
+            self.runner.run(
+                ["git", "worktree", "remove", "--force", str(workspace.path)],
+                cwd=self.repo_root,
+            )
 
     def list_issue_workspaces(self) -> list[WorktreeInfo]:
         if not self.workspace_root.exists():
@@ -81,11 +84,16 @@ class GitWorktreeManager:
             match = re.match(r"issue-(\d+)-", child.name)
             if not match:
                 continue
+            resolved = child.resolve()
+            if not _is_relative_to(resolved, self.workspace_root):
+                continue
+            if not (resolved / ".git").exists():
+                continue
             items.append(
                 WorktreeInfo(
                     issue_number=int(match.group(1)),
                     branch_name="",
-                    path=child.resolve(),
+                    path=resolved,
                     created_now=False,
                 )
             )
@@ -106,7 +114,7 @@ class GitWorktreeManager:
 
     def _ref_exists(self, ref_name: str) -> bool:
         result = self.runner.run(
-            f'git rev-parse --verify --quiet "{ref_name}"',
+            ["git", "rev-parse", "--verify", "--quiet", ref_name],
             cwd=self.repo_root,
             check=False,
         )

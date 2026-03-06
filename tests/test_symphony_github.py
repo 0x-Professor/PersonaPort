@@ -2,85 +2,51 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.symphony.github import GitHubTracker, evaluate_pr_checks
+from tools.symphony.github import GitHubTracker
 from tools.symphony.models import LabelContract, TrackerConfig
 
 from .symphony_test_helpers import FakeRunner
 
 
-def test_github_tracker_filters_candidate_issues(tmp_path: Path) -> None:
+def test_ensure_pr_passes_title_as_a_single_argument(tmp_path: Path) -> None:
     runner = FakeRunner()
+    runner.add_json_result("gh pr list", [])
+    runner.add_command_result("gh pr create", stdout="https://example.test/pr/3\n")
     runner.add_json_result(
-        "gh issue list",
+        "gh pr list",
         [
             {
-                "number": 1,
-                "title": "ready",
-                "body": "",
-                "url": "https://example.test/1",
-                "state": "OPEN",
-                "createdAt": "2026-03-01T00:00:00Z",
-                "updatedAt": "2026-03-01T00:00:00Z",
-                "labels": [{"name": "agent-ready"}],
-            },
-            {
-                "number": 2,
-                "title": "blocked",
-                "body": "",
-                "url": "https://example.test/2",
-                "state": "OPEN",
-                "createdAt": "2026-03-01T00:00:01Z",
-                "updatedAt": "2026-03-01T00:00:01Z",
-                "labels": [{"name": "blocked"}, {"name": "agent-ready"}],
-            },
-            {
                 "number": 3,
-                "title": "rework",
-                "body": "",
-                "url": "https://example.test/3",
+                "url": "https://example.test/pr/3",
+                "isDraft": True,
                 "state": "OPEN",
-                "createdAt": "2026-03-01T00:00:02Z",
-                "updatedAt": "2026-03-01T00:00:02Z",
-                "labels": [{"name": "agent-rework"}],
-            },
-            {
-                "number": 4,
-                "title": "handoff",
-                "body": "",
-                "url": "https://example.test/4",
-                "state": "OPEN",
-                "createdAt": "2026-03-01T00:00:03Z",
-                "updatedAt": "2026-03-01T00:00:03Z",
-                "labels": [{"name": "human-review"}],
-            },
+                "statusCheckRollup": [],
+                "mergeStateStatus": "CLEAN",
+                "reviewDecision": None,
+            }
         ],
     )
     tracker = GitHubTracker(
-        config=TrackerConfig(kind="github", labels=LabelContract()),
+        config=TrackerConfig(repo="owner/repo", labels=LabelContract()),
         repo_root=tmp_path,
         runner=runner,
     )
 
-    issues = tracker.list_candidate_issues()
-
-    assert [issue.number for issue in issues] == [1, 3]
-
-
-def test_github_tracker_claim_issue_edits_labels(tmp_path: Path) -> None:
-    runner = FakeRunner()
-    tracker = GitHubTracker(
-        config=TrackerConfig(kind="github", labels=LabelContract()),
-        repo_root=tmp_path,
-        runner=runner,
+    pr = tracker.ensure_pr(
+        branch_name="agent/7-fix-quotes",
+        base_branch="master",
+        title='Fix "quotes" && echo nope',
+        body="Body",
+        draft=True,
+        cwd=tmp_path,
     )
 
-    tracker.claim_issue(42)
-
-    assert any("--add-label \"agent-running\"" in call[0] for call in runner.calls)
-    assert any("--remove-label \"agent-ready,agent-rework,human-review\"" in call[0] for call in runner.calls)
-
-
-def test_evaluate_pr_checks_distinguishes_success_pending_and_failure() -> None:
-    assert evaluate_pr_checks(({"status": "COMPLETED", "conclusion": "SUCCESS"},)) == "success"
-    assert evaluate_pr_checks(({"status": "IN_PROGRESS", "conclusion": None},)) == "pending"
-    assert evaluate_pr_checks(({"status": "COMPLETED", "conclusion": "FAILURE"},)) == "failed"
+    assert pr.number == 3
+    create_call = next(
+        raw_call
+        for raw_call, _ in runner.raw_calls
+        if isinstance(raw_call, list) and raw_call[:3] == ["gh", "pr", "create"]
+    )
+    assert create_call[create_call.index("--title") + 1] == 'Fix "quotes" && echo nope'
+    assert create_call[create_call.index("--base") + 1] == "master"
+    assert "--draft" in create_call

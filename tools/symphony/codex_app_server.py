@@ -153,6 +153,11 @@ class CodexAppServerClient:
                     raise CodexAppServerError(str(response["error"]))
                 return dict(response["result"])
             self._pump_messages(cancel_event=cancel_event, timeout=0.2)
+        if request_id in self._responses:
+            response = self._responses.pop(request_id)
+            if "error" in response:
+                raise CodexAppServerError(str(response["error"]))
+            return dict(response["result"])
         raise CodexAppServerError(
             f"Timed out waiting for Codex response to request {request_id}."
         )

@@ -250,7 +250,7 @@ class IssueExecutor:
                 cancel_event=cancel_event,
             )
             changed_files = self.runner.run(
-                "git status --short",
+                ["git", "status", "--short"],
                 cwd=worktree.path,
                 cancel_event=cancel_event,
                 check=False,
@@ -297,16 +297,14 @@ class IssueExecutor:
                 branch_name=worktree.branch_name,
                 workspace_path=worktree.path,
             )
-        except (CommandCancelledError, CodexAppServerError) as exc:
-            return ExecutionOutcome(
-                issue_number=issue.number,
-                attempt=attempt,
-                status="retry",
-                reason=str(exc),
-                branch_name=worktree.branch_name,
-                workspace_path=worktree.path,
-            )
-        except (CommandExecutionError, CommandTimeoutError, WorkflowLoadError, RuntimeError) as exc:
+        except (
+            CommandCancelledError,
+            CodexAppServerError,
+            CommandExecutionError,
+            CommandTimeoutError,
+            WorkflowLoadError,
+            RuntimeError,
+        ) as exc:
             return ExecutionOutcome(
                 issue_number=issue.number,
                 attempt=attempt,
@@ -343,6 +341,7 @@ class IssueExecutor:
             cwd=worktree.path,
             timeout_seconds=self.workflow.hooks.timeout_seconds,
             cancel_event=cancel_event,
+            shell=True,
         )
 
     def _run_validation(
@@ -358,6 +357,7 @@ class IssueExecutor:
                     cwd=workspace,
                     cancel_event=cancel_event,
                     check=False,
+                    shell=True,
                 )
             )
         return results
@@ -374,11 +374,10 @@ class IssueExecutor:
     ) -> PullRequestInfo | None:
         if not changed_files.stdout.strip():
             return None
-        self.runner.run("git add -A", cwd=worktree.path, cancel_event=cancel_event)
-        safe_title = issue.title[:50].replace('"', "'")
-        commit_message = f'git commit -m "agent: resolve #{issue.number} {safe_title}"'
+        self.runner.run(["git", "add", "-A"], cwd=worktree.path, cancel_event=cancel_event)
+        commit_message = f"agent: resolve #{issue.number} {issue.title[:50]}"
         commit_result = self.runner.run(
-            commit_message,
+            ["git", "commit", "-m", commit_message],
             cwd=worktree.path,
             cancel_event=cancel_event,
             check=False,
@@ -387,7 +386,7 @@ class IssueExecutor:
         if commit_result.returncode != 0 and "nothing to commit" not in combined_output:
             raise CommandExecutionError(commit_result)
         self.runner.run(
-            f'git push -u origin "{worktree.branch_name}"',
+            ["git", "push", "-u", "origin", worktree.branch_name],
             cwd=worktree.path,
             cancel_event=cancel_event,
         )
@@ -474,7 +473,7 @@ class SymphonyService:
     ) -> None:
         self.runner = runner or ShellCommandRunner()
         repo_root_text = self.runner.run(
-            "git rev-parse --show-toplevel",
+            ["git", "rev-parse", "--show-toplevel"],
             cwd=workflow_path.parent,
         ).stdout.strip()
         self.repo_root = Path(repo_root_text).resolve()
@@ -521,8 +520,8 @@ class SymphonyService:
             time.sleep(sleep_seconds)
 
     def _preflight(self) -> None:
-        self.runner.run("git rev-parse --is-inside-work-tree", cwd=self.repo_root)
-        self.runner.run("codex --version", cwd=self.repo_root)
+        self.runner.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=self.repo_root)
+        self.runner.run(["codex", "--version"], cwd=self.repo_root)
         self.tracker.validate_auth()
 
     def _reload_workflow_if_needed(self) -> None:
@@ -625,8 +624,12 @@ class SymphonyService:
                 current_issue = self.tracker.get_issue(outcome.issue_number)
                 if current_issue.normalized_state == "open":
                     self.tracker.release_issue(outcome.issue_number)
-            except Exception:
-                pass
+            except Exception as exc:
+                self.logger.log(
+                    "issue_release_failed",
+                    issue_number=outcome.issue_number,
+                    error=str(exc),
+                )
             self.worktrees.cleanup_workspace(outcome.issue_number)
             self.logger.log("issue_merged", issue_number=outcome.issue_number)
             return
